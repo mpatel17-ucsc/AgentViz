@@ -1,0 +1,2 @@
+[console_scripts]
+agentviz = agentviz.cli:main

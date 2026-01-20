@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+websockets
+python-socketio
+pydantic
+watchdog
+psutil
