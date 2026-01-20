@@ -47,7 +47,6 @@ class ClaudeAdapter(BaseAdapter):
         self.otel_processor_task = None
         self.port = None
         self._seen_tool_calls = set()  # Dedup tool calls
-        self._seen_file_ops = set()  # Dedup file operations
 
     def _create_otel_app(self):
         app = FastAPI()
@@ -274,50 +273,21 @@ class ClaudeAdapter(BaseAdapter):
                             print(f"[OTEL] Active sessions: {count}", file=sys.stderr)
 
     async def _process_logs(self, logs_req):
-        """Process log events from Claude Code"""
+        """Process log events from Claude Code.
+
+        NOTE: File operations are handled by the file watcher in base.py
+        which provides actual code content via git diff or file reading.
+        OTEL logs don't include the actual code changes, so we only log them for debugging.
+        """
         for resource_log in logs_req.resource_logs:
             for scope_log in resource_log.scope_logs:
                 for log_record in scope_log.log_records:
-                    attrs = {attr.key: self._get_attr_value(attr.value) for attr in log_record.attributes}
-                    
-                    # Extract log body
+                    # Extract log body for debugging
                     body = ""
                     if log_record.body.HasField('string_value'):
                         body = log_record.body.string_value
-                    
+
                     print(f"[OTEL] Log: {body[:100]}", file=sys.stderr)
-                    
-                    # File operation events (from OTEL_LOG_USER_PROMPTS or structured events)
-                    operation = attrs.get('operation') or attrs.get('event')
-                    if operation:
-                        operation_lower = operation.lower()
-                        
-                        # File operations
-                        if 'file' in operation_lower or 'edit' in operation_lower or 'create' in operation_lower:
-                            file_path = attrs.get('file_path') or attrs.get('path', 'unknown')
-                            
-                            # Determine operation type
-                            op_type = 'modified'
-                            if 'create' in operation_lower:
-                                op_type = 'created'
-                            elif 'delete' in operation_lower:
-                                op_type = 'deleted'
-                            
-                            # Create dedup key
-                            timestamp = log_record.time_unix_nano
-                            dedup_key = f"{op_type}:{file_path}:{timestamp}"
-                            
-                            if dedup_key not in self._seen_file_ops:
-                                self._seen_file_ops.add(dedup_key)
-                                
-                                print(f"[OTEL] File operation: {op_type} {file_path}", file=sys.stderr)
-                                await self.emit_event(f"file_{op_type}", {
-                                    "file_path": file_path,
-                                    "operation_type": op_type,
-                                    "lines_added": int(attrs.get('lines_added', 0)),
-                                    "lines_removed": int(attrs.get('lines_removed', 0)),
-                                    "attributes": attrs
-                                })
 
     def _get_attr_value(self, value):
         """Extract value from OTLP AnyValue"""

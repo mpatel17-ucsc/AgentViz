@@ -26,9 +26,30 @@ class DebouncedFileSystemEventHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
+        # For moved events, check destination (this is how Claude atomic writes work)
+        if event.event_type == 'moved':
+            dest_path = getattr(event, 'dest_path', None)
+            if dest_path:
+                dest_filename = os.path.basename(dest_path)
+                # Skip if destination is hidden/temp
+                if dest_filename.startswith('.') or dest_filename.endswith('~') or dest_filename.endswith('.swp'):
+                    return
+                if '.tmp.' in dest_filename:
+                    return
+                # Allow this event - it's a temp file being renamed to a real file
+                event_key = (event.event_type, dest_path)
+                self.loop.call_soon_threadsafe(
+                    lambda: self._schedule_debounced(event_key, event)
+                )
+                return
+
         # Ignore hidden/temp files
         filename = os.path.basename(event.src_path)
         if filename.startswith('.') or filename.endswith('~') or filename.endswith('.swp'):
+            return
+
+        # Ignore Claude Code temp files (pattern: filename.tmp.XXXX.XXXXX)
+        if '.tmp.' in filename:
             return
 
         event_key = (event.event_type, event.src_path)
@@ -54,43 +75,120 @@ class DebouncedFileSystemEventHandler(FileSystemEventHandler):
             'created': 'file_created',
             'modified': 'file_modified',
             'deleted': 'file_deleted',
+            'moved': 'file_modified',  # Treat moved/renamed as modified
         }
         event_type = event_map.get(event.event_type)
         if event_type:
+            # For moved events, use dest_path as the actual file path
+            if event.event_type == 'moved':
+                file_path = getattr(event, 'dest_path', event.src_path)
+                # Skip if destination is a temp file
+                dest_filename = os.path.basename(file_path)
+                if '.tmp.' in dest_filename:
+                    return
+            else:
+                file_path = event.src_path
+
             try:
-                rel_path = os.path.relpath(event.src_path, self.adapter.working_dir)
+                rel_path = os.path.relpath(file_path, self.adapter.working_dir)
             except ValueError:
-                rel_path = event.src_path
-            
+                rel_path = file_path
+
             print(f"[AgentViz Debug] File event: {event_type} - {rel_path}", file=sys.stderr)
-            
-            metadata = {"file_path": rel_path, "absolute_path": event.src_path}
-            if event.event_type in ['created', 'modified'] and os.path.exists(event.src_path):
+
+            metadata = {"file_path": rel_path, "absolute_path": file_path}
+            if event.event_type in ['created', 'modified', 'moved'] and os.path.exists(file_path):
                 try:
-                    metadata['size_bytes'] = os.path.getsize(event.src_path)
-                    # Add git diff for line changes (like Vibe Kanban)
-                    metadata.update(self._get_git_diff(rel_path))
+                    metadata['size_bytes'] = os.path.getsize(file_path)
+                    # Get git diff with actual code changes
+                    metadata.update(self._get_git_diff_with_content(rel_path, file_path))
                 except OSError:
                     pass
-            
+
             await self.adapter.emit_event(event_type, metadata)
 
         if event_key in self.timers:
             del self.timers[event_key]
 
-    def _get_git_diff(self, rel_path):
+    def _get_git_diff_with_content(self, rel_path, abs_path):
+        """Get git diff with actual code changes"""
+        result = {"lines_added": 0, "lines_removed": 0, "diff": None, "content_preview": None}
+
         try:
-            # Assume workspace is git repo — run git diff for lines added/removed
-            cmd = ["git", "--no-pager", "diff", "--numstat", rel_path]
-            result = subprocess.run(cmd, cwd=self.adapter.working_dir, capture_output=True, text=True)
-            if result.returncode == 0 and result.stdout.strip():
-                parts = result.stdout.strip().split()
-                if len(parts) == 3:
-                    added, removed, _ = parts
-                    return {"lines_added": int(added), "lines_removed": int(removed)}
+            # First try to get the unified diff (actual code changes)
+            diff_cmd = ["git", "--no-pager", "diff", "--no-color", "-U3", rel_path]
+            diff_result = subprocess.run(
+                diff_cmd,
+                cwd=self.adapter.working_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if diff_result.returncode == 0 and diff_result.stdout.strip():
+                diff_text = diff_result.stdout.strip()
+                # Limit diff size to prevent huge payloads
+                if len(diff_text) > 5000:
+                    diff_text = diff_text[:5000] + "\n... (truncated)"
+                result["diff"] = diff_text
+
+                # Count added/removed lines from the diff
+                lines_added = 0
+                lines_removed = 0
+                for line in diff_text.split('\n'):
+                    if line.startswith('+') and not line.startswith('+++'):
+                        lines_added += 1
+                    elif line.startswith('-') and not line.startswith('---'):
+                        lines_removed += 1
+                result["lines_added"] = lines_added
+                result["lines_removed"] = lines_removed
+            else:
+                # No staged diff - might be a new untracked file, read content directly
+                numstat_cmd = ["git", "--no-pager", "diff", "--numstat", rel_path]
+                numstat_result = subprocess.run(
+                    numstat_cmd,
+                    cwd=self.adapter.working_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if numstat_result.returncode == 0 and numstat_result.stdout.strip():
+                    parts = numstat_result.stdout.strip().split()
+                    if len(parts) >= 2:
+                        try:
+                            result["lines_added"] = int(parts[0]) if parts[0] != '-' else 0
+                            result["lines_removed"] = int(parts[1]) if parts[1] != '-' else 0
+                        except ValueError:
+                            pass
+
+            # For new/untracked files or if no git diff, read the file content
+            if not result["diff"] and os.path.exists(abs_path):
+                try:
+                    # Check if it's a text file by extension
+                    text_extensions = {'.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.c', '.cpp',
+                                       '.h', '.hpp', '.go', '.rs', '.rb', '.php', '.swift', '.kt',
+                                       '.scala', '.sh', '.bash', '.zsh', '.json', '.yaml', '.yml',
+                                       '.toml', '.xml', '.html', '.css', '.scss', '.md', '.txt',
+                                       '.sql', '.graphql', '.proto', '.dockerfile', '.env'}
+
+                    _, ext = os.path.splitext(abs_path.lower())
+                    if ext in text_extensions or not ext:
+                        with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read(3000)  # Read first 3KB
+                            if len(content) == 3000:
+                                content += "\n... (truncated)"
+                            result["content_preview"] = content
+                            if result["lines_added"] == 0:
+                                result["lines_added"] = content.count('\n') + 1
+                except Exception as e:
+                    print(f"[AgentViz Debug] Could not read file content: {e}", file=sys.stderr)
+
+        except subprocess.TimeoutExpired:
+            print(f"[AgentViz Debug] Git diff timed out for {rel_path}", file=sys.stderr)
         except Exception as e:
-            print(f"[GIT DIFF DEBUG] Failed to get diff for {rel_path}: {e}", file=sys.stderr)
-        return {"lines_added": 0, "lines_removed": 0}
+            print(f"[AgentViz Debug] Failed to get diff for {rel_path}: {e}", file=sys.stderr)
+
+        return result
 
 class BaseAdapter:
     def __init__(self, monitor, agent_id, agent_type, working_dir, command):

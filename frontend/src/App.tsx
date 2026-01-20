@@ -129,12 +129,65 @@ const renderPayload = (event: AgentEvent) => {
       case 'file_deleted':
       case 'file_operation':
         return (
-          <Typography variant="body2" sx={{ mt: 0.5 }}>
-            File: {metadata.file_path} {metadata.size_bytes ? `(${metadata.size_bytes} bytes)` : ''}
-            {metadata.lines_added ? ` (+${metadata.lines_added} lines)` : ''}
-            {metadata.lines_removed ? ` (-${metadata.lines_removed} lines)` : ''}
-            {metadata.operation_type ? ` (type: ${metadata.operation_type})` : ''}
-          </Typography>
+          <Box sx={{ mt: 0.5 }}>
+            <Typography variant="body2">
+              File: {metadata.file_path} {metadata.size_bytes ? `(${metadata.size_bytes} bytes)` : ''}
+              {metadata.lines_added ? ` (+${metadata.lines_added} lines)` : ''}
+              {metadata.lines_removed ? ` (-${metadata.lines_removed} lines)` : ''}
+              {metadata.operation_type ? ` [${metadata.operation_type}]` : ''}
+              {metadata.programming_language ? ` (${metadata.programming_language})` : ''}
+            </Typography>
+            {/* Show git diff if available */}
+            {metadata.diff && (
+              <Box
+                component="pre"
+                sx={{
+                  mt: 1,
+                  p: 1.5,
+                  bgcolor: '#1a1a2e',
+                  borderRadius: 1,
+                  fontSize: '11px',
+                  fontFamily: 'monospace',
+                  overflow: 'auto',
+                  maxHeight: '300px',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  '& .diff-add': { color: '#4caf50', bgcolor: 'rgba(76, 175, 80, 0.1)' },
+                  '& .diff-remove': { color: '#f44336', bgcolor: 'rgba(244, 67, 54, 0.1)' },
+                  '& .diff-header': { color: '#2196f3' },
+                }}
+              >
+                {metadata.diff.split('\n').map((line: string, i: number) => {
+                  let className = '';
+                  if (line.startsWith('+') && !line.startsWith('+++')) className = 'diff-add';
+                  else if (line.startsWith('-') && !line.startsWith('---')) className = 'diff-remove';
+                  else if (line.startsWith('@@') || line.startsWith('diff') || line.startsWith('index')) className = 'diff-header';
+                  return <div key={i} className={className}>{line}</div>;
+                })}
+              </Box>
+            )}
+            {/* Show content preview for new files without git diff */}
+            {!metadata.diff && metadata.content_preview && (
+              <Box
+                component="pre"
+                sx={{
+                  mt: 1,
+                  p: 1.5,
+                  bgcolor: '#1a1a2e',
+                  borderRadius: 1,
+                  fontSize: '11px',
+                  fontFamily: 'monospace',
+                  overflow: 'auto',
+                  maxHeight: '200px',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  color: '#a0a0a0',
+                }}
+              >
+                {metadata.content_preview}
+              </Box>
+            )}
+          </Box>
         );
       case 'lines_changed':
         return (
