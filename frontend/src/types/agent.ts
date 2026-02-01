@@ -1,10 +1,48 @@
-// Agent State Machine
+// Agent State Machine (Kanban columns)
 export type AgentState =
   | 'ready'
   | 'in_progress'
   | 'waiting_for_input'
   | 'error'
   | 'completed';
+
+// Backend hook states (more granular)
+// These map to specific lifecycle events from agent hooks:
+// - Claude Code: SessionStart, UserPromptSubmit, PreToolUse, Stop, PermissionRequest, SessionEnd
+// - Gemini CLI: SessionStart, BeforeAgent, BeforeTool, AfterAgent, Notification, SessionEnd
+// - Codex CLI: agent-turn-complete (limited hooks available)
+export type BackendState =
+  | 'starting'      // Session just started (SessionStart)
+  | 'thinking'      // Processing prompt, before tools (UserPromptSubmit / BeforeAgent)
+  | 'in_progress'   // Generic processing state
+  | 'working'       // Executing a tool (PreToolUse / BeforeTool)
+  | 'ready'         // Task complete, waiting for input (Stop / AfterAgent / agent-turn-complete)
+  | 'waiting_for_input'  // Needs permission/approval (PermissionRequest / Notification)
+  | 'idle'          // Idle for extended period
+  | 'stopped'       // Session ended (SessionEnd / process exit)
+  | 'error';        // Error occurred
+
+// Map backend states to frontend Kanban columns
+export function mapBackendStateToFrontend(backendState: BackendState): AgentState {
+  switch (backendState) {
+    case 'starting':
+    case 'thinking':    // Thinking maps to in_progress (agent is working internally)
+    case 'in_progress':
+    case 'working':
+      return 'in_progress';
+    case 'ready':
+    case 'idle':
+      return 'ready';
+    case 'waiting_for_input':
+      return 'waiting_for_input';
+    case 'stopped':
+      return 'completed';
+    case 'error':
+      return 'error';
+    default:
+      return 'ready';
+  }
+}
 
 // Subprocess information
 export interface Subprocess {

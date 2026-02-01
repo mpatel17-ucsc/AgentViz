@@ -16,6 +16,8 @@ class Monitor:
         self.workspace = workspace
         self.sio = socketio.Client()
         self.lock = asyncio.Lock()
+        # Track whether we've sent agent_stopped (used by cli.py for fallback)
+        self._agent_stopped_sent = False
 
         self.adapter_map = {
             "gemini": GeminiAdapter,
@@ -23,6 +25,7 @@ class Monitor:
             "claude": ClaudeAdapter,
             "claude-code": ClaudeAdapter,
             "codex": CodexAdapter,
+            "codex-cli": CodexAdapter,
             "openai-codex": CodexAdapter,
         }
 
@@ -63,19 +66,86 @@ class Monitor:
 
         try:
             await adapter.run()
+            # If we get here, the adapter completed normally
+            # The adapter should have emitted agent_stopped already
+            self._agent_stopped_sent = adapter._agent_stopped_emitted
+        except (asyncio.CancelledError, KeyboardInterrupt) as e:
+            # Emit agent_stopped before re-raising
+            if not self._agent_stopped_sent:
+                try:
+                    await self.emit_event(
+                        agent_id=self.agent_id,
+                        agent_type=self.agent_type,
+                        event_type="agent_stopped",
+                        working_dir=self.workspace,
+                        metadata={"return_code": -2, "reason": "interrupted"}
+                    )
+                    # Also emit state_change for proper frontend update
+                    await self.emit_event(
+                        agent_id=self.agent_id,
+                        agent_type=self.agent_type,
+                        event_type="state_change",
+                        working_dir=self.workspace,
+                        metadata={"state": "stopped", "source": "user_interrupt", "return_code": -2}
+                    )
+                    self._agent_stopped_sent = True
+                    # Give the event time to be sent
+                    await asyncio.sleep(0.1)
+                except Exception as emit_error:
+                    print(f"[AgentViz Debug] Failed to emit agent_stopped: {emit_error}", file=sys.stderr)
+            raise
         except Exception as e:
             print(f"Error running adapter: {e}", file=sys.stderr)
             # Emit an error event if an adapter fails unexpectedly
-            await self.emit_event(
-                agent_id=self.agent_id,
-                agent_type=self.agent_type,
-                event_type="error",
-                working_dir=self.workspace,
-                metadata={"error": str(e)}
-            )
+            try:
+                await self.emit_event(
+                    agent_id=self.agent_id,
+                    agent_type=self.agent_type,
+                    event_type="error",
+                    working_dir=self.workspace,
+                    metadata={"error": str(e)}
+                )
+                # Also emit agent_stopped so it moves to completed/error
+                await self.emit_event(
+                    agent_id=self.agent_id,
+                    agent_type=self.agent_type,
+                    event_type="agent_stopped",
+                    working_dir=self.workspace,
+                    metadata={"return_code": 1, "reason": "error", "error": str(e)}
+                )
+                self._agent_stopped_sent = True
+            except Exception:
+                pass
         finally:
+            # Final attempt to emit agent_stopped if not already done
+            if not self._agent_stopped_sent and hasattr(adapter, '_agent_stopped_emitted') and not adapter._agent_stopped_emitted:
+                try:
+                    # Use synchronous emit since we may be shutting down
+                    if self.sio.connected:
+                        self.sio.emit("agent_event", {
+                            "agent_id": self.agent_id,
+                            "agent_type": self.agent_type,
+                            "event_type": "agent_stopped",
+                            "timestamp": time.time(),
+                            "working_dir": self.workspace,
+                            "metadata": {"return_code": -2, "reason": "cleanup"}
+                        })
+                        self.sio.emit("agent_event", {
+                            "agent_id": self.agent_id,
+                            "agent_type": self.agent_type,
+                            "event_type": "state_change",
+                            "timestamp": time.time(),
+                            "working_dir": self.workspace,
+                            "metadata": {"state": "stopped", "source": "cleanup", "return_code": -2}
+                        })
+                        self._agent_stopped_sent = True
+                        # Small sync sleep to allow message to be sent
+                        import time as time_module
+                        time_module.sleep(0.1)
+                except Exception as e:
+                    print(f"[AgentViz Debug] Final agent_stopped emit failed: {e}", file=sys.stderr)
+
             if self.sio.connected:
                 print(f"[AgentViz Debug] Attempting SocketIO disconnect.", file=sys.stderr)
                 self.sio.disconnect()
                 print(f"[AgentViz Debug] SocketIO disconnected.", file=sys.stderr)
-

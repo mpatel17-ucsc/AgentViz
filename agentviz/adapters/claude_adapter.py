@@ -1,11 +1,13 @@
 import asyncio
 import os
-import sys
 import socket
-from contextlib import closing, contextmanager
 import json
+import tempfile
+import shutil
+from pathlib import Path
+from contextlib import closing
 
-from .base import BaseAdapter
+from .base import BaseAdapter, AGENTVIZ_DEBUG, debug_print, register_agent_activity, is_path_within_dir
 
 # Import OpenTelemetry protobuf definitions
 try:
@@ -14,7 +16,7 @@ try:
     from opentelemetry.proto.collector.logs.v1 import logs_service_pb2
     PROTOBUF_AVAILABLE = True
 except ImportError:
-    print("[OTEL] Warning: opentelemetry-proto not installed. Run: pip install opentelemetry-proto", file=sys.stderr)
+    debug_print("[OTEL] Warning: opentelemetry-proto not installed. Run: pip install opentelemetry-proto")
     PROTOBUF_AVAILABLE = False
 
 # Import FastAPI/uvicorn for OTLP receiver
@@ -23,7 +25,7 @@ try:
     import uvicorn
     FASTAPI_AVAILABLE = True
 except ImportError:
-    print("[OTEL] Warning: fastapi/uvicorn not installed. Run: pip install fastapi uvicorn", file=sys.stderr)
+    debug_print("[OTEL] Warning: fastapi/uvicorn not installed. Run: pip install fastapi uvicorn")
     FASTAPI_AVAILABLE = False
 
 
@@ -37,7 +39,16 @@ def find_free_port():
 
 class ClaudeAdapter(BaseAdapter):
     """
-    Adapter for Claude Code with OpenTelemetry OTLP support
+    Adapter for Claude Code with:
+    1. Official Hooks API for state tracking (SessionStart, Stop, PreToolUse, etc.)
+    2. OpenTelemetry OTLP for file events and tool details
+
+    State Detection via Hooks:
+    - SessionStart -> IN_PROGRESS
+    - PreToolUse/PostToolUse -> WORKING (tool execution)
+    - Stop -> READY (task complete)
+    - Notification[idle_prompt] -> IDLE
+    - Notification[permission_prompt] -> WAITING_FOR_INPUT
     """
 
     def __init__(self, *args, **kwargs):
@@ -45,109 +56,456 @@ class ClaudeAdapter(BaseAdapter):
         self.otel_queue = asyncio.Queue()
         self.otel_server_task = None
         self.otel_processor_task = None
+        self.state_monitor_task = None
         self.port = None
-        self._seen_tool_calls = set()  # Dedup tool calls
+        self._seen_tool_calls = set()
+        self._seen_file_operations = set()
+        self._disable_file_watcher = True
+        self._enable_subprocess_snapshot = False
+
+        # IMPORTANT: Use hooks for state tracking, not screen-based detection
+        # This prevents flickering when agent is thinking but not producing output
+        self._use_hooks_for_state = True
+
+        # State tracking via hooks
+        self._state_file = None
+        self._state_dir = None
+        self._claude_settings_backup = None
+        self._current_state = "idle"
+
+    def _get_state_hook_script(self):
+        """
+        Generate Python hook script for reliable JSON output.
+
+        IMPORTANT: Claude Code hooks require PURE JSON output on stdout.
+        Bash scripts can have shell initialization output that corrupts JSON parsing.
+        Python scripts provide reliable, clean JSON output.
+        """
+        return f'''#!/usr/bin/env python3
+# Claude Code state hook for agentviz
+# This script is called by Claude Code hooks to track state changes
+import sys
+import json
+import time
+
+def main():
+    event = sys.argv[1] if len(sys.argv) > 1 else "unknown"
+
+    # Read any stdin data (hook input JSON) - but we mainly care about the event name
+    stdin_data = None
+    try:
+        if not sys.stdin.isatty():
+            stdin_data = sys.stdin.read().strip()
+    except:
+        pass
+
+    # Build event record
+    data = {{
+        "event": event,
+        "timestamp": int(time.time() * 1000),
+        "agent_id": "{self.agent_id}"
+    }}
+
+    # If we got stdin data, try to extract useful fields
+    if stdin_data:
+        try:
+            hook_input = json.loads(stdin_data)
+            # Extract tool name if this is a tool-related hook
+            if "tool_name" in hook_input:
+                data["tool_name"] = hook_input["tool_name"]
+            # Extract notification type if this is a notification
+            if "notification_type" in hook_input:
+                data["notification_type"] = hook_input["notification_type"]
+        except json.JSONDecodeError:
+            pass
+
+    # Append to state file (atomic write)
+    try:
+        with open("{self._state_file}", "a") as f:
+            f.write(json.dumps(data) + "\\n")
+            f.flush()
+    except IOError as e:
+        sys.stderr.write(f"Failed to write state: {{e}}\\n")
+        sys.exit(1)
+
+    # Exit 0 = success, allow the action to proceed
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+'''
+
+    def _setup_hooks_config(self):
+        """
+        Set up Claude Code hooks configuration for state tracking.
+        Creates temporary settings that configure hooks to report state changes.
+        """
+        # Create a unique state directory for this agent instance
+        self._state_dir = tempfile.mkdtemp(prefix=f"agentviz-claude-{self.agent_id}-")
+        self._state_file = os.path.join(self._state_dir, "state.jsonl")
+
+        # Create the state file
+        Path(self._state_file).touch()
+
+        # Create hook script (Python for reliable JSON output)
+        # Using .py extension for clarity
+        hook_script_path = os.path.join(self._state_dir, "state-hook.py")
+        with open(hook_script_path, 'w') as f:
+            f.write(self._get_state_hook_script())
+        os.chmod(hook_script_path, 0o755)
+
+        debug_print(f"[HOOKS] Created hook script: {hook_script_path}")
+
+        # Build hooks configuration
+        # See: https://code.claude.com/docs/en/hooks
+        #
+        # Hook lifecycle order:
+        # 1. SessionStart - session begins
+        # 2. UserPromptSubmit - user submits prompt (THINKING state)
+        # 3. PreToolUse - before tool executes (WORKING state)
+        # 4. PermissionRequest - permission dialog shown (WAITING_FOR_INPUT)
+        # 5. PostToolUse - after tool completes
+        # 6. Stop - Claude finishes responding (READY state)
+        # 7. SessionEnd - session terminates (STOPPED state)
+        #
+        # Note: Use python3 explicitly to ensure the Python script runs correctly
+        hooks_config = {
+            "hooks": {
+                "SessionStart": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script_path} session_start"
+                    }]
+                }],
+                "Stop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script_path} stop"
+                    }]
+                }],
+                "PreToolUse": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script_path} pre_tool_use"
+                    }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script_path} post_tool_use"
+                    }]
+                }],
+                # PermissionRequest fires when user sees permission dialog
+                # This is the PRIMARY hook for detecting "waiting for input"
+                # See: https://code.claude.com/docs/en/hooks#permissionrequest
+                "PermissionRequest": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script_path} permission_request"
+                    }]
+                }],
+                # Notification hooks for different notification types
+                # Matchers: permission_prompt, idle_prompt, auth_success, elicitation_dialog
+                "Notification": [
+                    {
+                        "matcher": "idle_prompt",
+                        "hooks": [{
+                            "type": "command",
+                            "command": f"python3 {hook_script_path} idle_prompt"
+                        }]
+                    },
+                    {
+                        "matcher": "permission_prompt",
+                        "hooks": [{
+                            "type": "command",
+                            "command": f"python3 {hook_script_path} permission_prompt"
+                        }]
+                    }
+                ],
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script_path} user_prompt_submit"
+                    }]
+                }],
+                "SessionEnd": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script_path} session_end"
+                    }]
+                }]
+            }
+        }
+
+        # Write hooks config to project-local settings
+        project_settings_dir = os.path.join(self.working_dir, ".claude")
+        project_settings_path = os.path.join(project_settings_dir, "settings.local.json")
+
+        os.makedirs(project_settings_dir, exist_ok=True)
+
+        # Backup existing settings if present
+        if os.path.exists(project_settings_path):
+            with open(project_settings_path, 'r') as f:
+                self._claude_settings_backup = f.read()
+            # Merge with existing settings
+            try:
+                existing = json.loads(self._claude_settings_backup)
+                existing["hooks"] = hooks_config["hooks"]
+                hooks_config = existing
+            except json.JSONDecodeError:
+                pass
+
+        with open(project_settings_path, 'w') as f:
+            json.dump(hooks_config, f, indent=2)
+
+        debug_print(f"[HOOKS] Configured Claude Code hooks in {project_settings_path}")
+        debug_print(f"[HOOKS] State file: {self._state_file}")
+
+        return project_settings_path
+
+    def _cleanup_hooks_config(self):
+        """Clean up hooks configuration"""
+        project_settings_path = os.path.join(self.working_dir, ".claude", "settings.local.json")
+
+        try:
+            if self._claude_settings_backup is not None:
+                with open(project_settings_path, 'w') as f:
+                    f.write(self._claude_settings_backup)
+                debug_print("[HOOKS] Restored original settings.local.json")
+            elif os.path.exists(project_settings_path):
+                os.remove(project_settings_path)
+                debug_print("[HOOKS] Removed temporary settings.local.json")
+                # Remove .claude dir if empty
+                claude_dir = os.path.join(self.working_dir, ".claude")
+                if os.path.exists(claude_dir) and not os.listdir(claude_dir):
+                    os.rmdir(claude_dir)
+        except Exception as e:
+            debug_print(f"[HOOKS] Cleanup warning: {e}")
+
+        # Clean up state directory
+        if self._state_dir and os.path.exists(self._state_dir):
+            try:
+                shutil.rmtree(self._state_dir)
+                debug_print(f"[HOOKS] Removed state directory: {self._state_dir}")
+            except Exception as e:
+                debug_print(f"[HOOKS] Could not remove state dir: {e}")
+
+    async def _monitor_state_file(self):
+        """Monitor the state file for hook events and emit state changes"""
+        debug_print("[HOOKS] State file monitor started")
+
+        last_position = 0
+
+        while not self.shutdown_event.is_set():
+            # CRITICAL: Check if process has exited before processing any events
+            # This prevents race conditions where hook events arrive after Ctrl+C
+            if self._process_exited:
+                debug_print("[HOOKS] Process exited, stopping state monitor")
+                break
+
+            try:
+                if os.path.exists(self._state_file):
+                    with open(self._state_file, 'r') as f:
+                        f.seek(last_position)
+                        new_lines = f.readlines()
+                        last_position = f.tell()
+
+                    for line in new_lines:
+                        # Check again before each event to minimize race window
+                        if self._process_exited:
+                            debug_print("[HOOKS] Process exited mid-batch, aborting")
+                            break
+
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        try:
+                            event_data = json.loads(line)
+                            event_type = event_data.get("event", "")
+
+                            debug_print(f"[HOOKS] Received event: {event_type}")
+
+                            # Map hook events to state transitions
+                            # See: https://code.claude.com/docs/en/hooks for lifecycle
+                            if event_type == "session_start":
+                                self._current_state = "starting"
+                                await self.emit_event("state_change", {
+                                    "state": "starting",
+                                    "source": "hook",
+                                    "hook_event": event_type
+                                })
+
+                            elif event_type == "user_prompt_submit":
+                                # UserPromptSubmit fires when user submits a prompt,
+                                # BEFORE Claude starts processing. This is the "thinking" state.
+                                # The agent will transition to "working" when PreToolUse fires,
+                                # or to "ready" when Stop fires (if no tools were used).
+                                self._current_state = "thinking"
+                                self._task_in_progress = True
+                                await self.emit_event("state_change", {
+                                    "state": "in_progress",  # Maps to in_progress for frontend
+                                    "source": "hook",
+                                    "hook_event": event_type,
+                                    "detail": "thinking"  # Distinguish from "working"
+                                })
+
+                            elif event_type == "pre_tool_use":
+                                # PreToolUse fires before a tool executes.
+                                # This transitions from "thinking" to "working".
+                                self._current_state = "working"
+                                register_agent_activity(self.agent_id)
+
+                                # Extract tool name from event data if available
+                                tool_name = event_data.get("tool_name", "unknown")
+
+                                await self.emit_event("state_change", {
+                                    "state": "working",
+                                    "source": "hook",
+                                    "hook_event": event_type,
+                                    "detail": "tool_executing",
+                                    "tool_name": tool_name
+                                })
+
+                            elif event_type == "post_tool_use":
+                                # Still working, but tool finished
+                                register_agent_activity(self.agent_id)
+                                await self.emit_event("tool_completed", {
+                                    "source": "hook"
+                                })
+
+                            elif event_type == "stop":
+                                # Claude finished responding - task complete
+                                self._current_state = "ready"
+                                self._task_in_progress = False
+                                await self.emit_event("task_completed", {
+                                    "reason": "hook_stop",
+                                    "source": "hook"
+                                })
+                                await self.emit_event("state_change", {
+                                    "state": "ready",
+                                    "source": "hook",
+                                    "hook_event": event_type
+                                })
+
+                            elif event_type == "idle_prompt":
+                                self._current_state = "idle"
+                                await self.emit_event("state_change", {
+                                    "state": "idle",
+                                    "source": "hook",
+                                    "hook_event": event_type
+                                })
+
+                            elif event_type == "permission_request":
+                                # PermissionRequest hook - fires when permission dialog appears
+                                # This is the primary hook for detecting waiting for user input
+                                self._current_state = "waiting_for_input"
+                                await self.emit_event("waiting_for_input", {
+                                    "prompt": "Permission required",
+                                    "source": "hook"
+                                })
+                                await self.emit_event("state_change", {
+                                    "state": "waiting_for_input",
+                                    "source": "hook",
+                                    "hook_event": event_type
+                                })
+
+                            elif event_type == "permission_prompt":
+                                # Notification[permission_prompt] - backup for permission detection
+                                self._current_state = "waiting_for_input"
+                                await self.emit_event("waiting_for_input", {
+                                    "prompt": "Permission required",
+                                    "source": "hook"
+                                })
+                                await self.emit_event("state_change", {
+                                    "state": "waiting_for_input",
+                                    "source": "hook",
+                                    "hook_event": event_type
+                                })
+
+                            elif event_type == "session_end":
+                                self._current_state = "stopped"
+                                await self.emit_event("state_change", {
+                                    "state": "stopped",
+                                    "source": "hook",
+                                    "hook_event": event_type
+                                })
+
+                        except json.JSONDecodeError as e:
+                            debug_print(f"[HOOKS] Invalid JSON in state file: {e}")
+
+                await asyncio.sleep(0.1)  # Check every 100ms
+
+            except Exception as e:
+                debug_print(f"[HOOKS] State monitor error: {e}")
+                await asyncio.sleep(0.5)
+
+        debug_print("[HOOKS] State file monitor stopped")
 
     def _create_otel_app(self):
         app = FastAPI()
 
         @app.get("/")
         async def root():
-            print(f"[OTEL] Health check received", file=sys.stderr)
             return {"status": "ok", "service": "agentviz-otlp-receiver"}
 
         @app.post("/v1/traces")
         async def receive_traces(request: Request):
             try:
                 body = await request.body()
-                print(f"[OTEL] *** RECEIVED TRACES ({len(body)} bytes) ***", file=sys.stderr)
-
+                debug_print(f"[OTEL] Received traces ({len(body)} bytes)")
                 if PROTOBUF_AVAILABLE:
                     traces_req = trace_service_pb2.ExportTraceServiceRequest()
                     traces_req.ParseFromString(body)
-                    num_spans = sum(
-                        len(scope_span.spans)
-                        for rs in traces_req.resource_spans
-                        for scope_span in rs.scope_spans
-                    )
-                    print(f"[OTEL] Parsed {num_spans} trace spans", file=sys.stderr)
                     await self.otel_queue.put(('traces', traces_req))
-                else:
-                    print("[OTEL] Cannot parse - opentelemetry-proto not installed", file=sys.stderr)
-
                 return {"status": "ok"}
             except Exception as e:
-                print(f"[OTEL] Error parsing traces: {e}", file=sys.stderr)
-                import traceback
-                traceback.print_exc()
+                debug_print(f"[OTEL] Error parsing traces: {e}")
                 return {"status": "error", "message": str(e)}
 
         @app.post("/v1/metrics")
         async def receive_metrics(request: Request):
             try:
                 body = await request.body()
-                print(f"[OTEL] *** RECEIVED METRICS ({len(body)} bytes) ***", file=sys.stderr)
-
+                debug_print(f"[OTEL] Received metrics ({len(body)} bytes)")
                 if PROTOBUF_AVAILABLE:
                     metrics_req = metrics_service_pb2.ExportMetricsServiceRequest()
                     metrics_req.ParseFromString(body)
-                    metric_names = []
-                    for rm in metrics_req.resource_metrics:
-                        for sm in rm.scope_metrics:
-                            for m in sm.metrics:
-                                metric_names.append(m.name)
-                    print(f"[OTEL] Parsed {len(metric_names)} metrics: {metric_names}", file=sys.stderr)
                     await self.otel_queue.put(('metrics', metrics_req))
-                else:
-                    print("[OTEL] Cannot parse - opentelemetry-proto not installed", file=sys.stderr)
-
                 return {"status": "ok"}
             except Exception as e:
-                print(f"[OTEL] Error parsing metrics: {e}", file=sys.stderr)
-                import traceback
-                traceback.print_exc()
+                debug_print(f"[OTEL] Error parsing metrics: {e}")
                 return {"status": "error", "message": str(e)}
 
         @app.post("/v1/logs")
         async def receive_logs(request: Request):
             try:
                 body = await request.body()
-                print(f"[OTEL] *** RECEIVED LOGS ({len(body)} bytes) ***", file=sys.stderr)
-
+                debug_print(f"[OTEL] Received logs ({len(body)} bytes)")
                 if PROTOBUF_AVAILABLE:
                     logs_req = logs_service_pb2.ExportLogsServiceRequest()
                     logs_req.ParseFromString(body)
-                    num_logs = sum(
-                        len(scope_log.log_records)
-                        for rl in logs_req.resource_logs
-                        for scope_log in rl.scope_logs
-                    )
-                    print(f"[OTEL] Parsed {num_logs} log records", file=sys.stderr)
                     await self.otel_queue.put(('logs', logs_req))
-                else:
-                    print("[OTEL] Cannot parse - opentelemetry-proto not installed", file=sys.stderr)
-
                 return {"status": "ok"}
             except Exception as e:
-                print(f"[OTEL] Error parsing logs: {e}", file=sys.stderr)
-                import traceback
-                traceback.print_exc()
+                debug_print(f"[OTEL] Error parsing logs: {e}")
                 return {"status": "error", "message": str(e)}
 
-        # Catch-all for debugging
         @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
         async def catch_all(path: str, request: Request):
             body = await request.body()
-            print(f"[OTEL] Caught request to /{path} ({request.method}, {len(body)} bytes)", file=sys.stderr)
+            debug_print(f"[OTEL] Caught request to /{path} ({len(body)} bytes)")
             return {"status": "ok"}
 
         return app
 
     async def _process_otel_queue(self):
-        print("[OTEL] Queue processor started, waiting for data...", file=sys.stderr)
+        debug_print("[OTEL] Queue processor started")
         while True:
             data_type, data = await self.otel_queue.get()
-            print(f"[OTEL] Processing {data_type} from queue", file=sys.stderr)
             try:
                 if data_type == 'traces':
                     await self._process_traces(data)
@@ -156,9 +514,7 @@ class ClaudeAdapter(BaseAdapter):
                 elif data_type == 'logs':
                     await self._process_logs(data)
             except Exception as e:
-                print(f"[OTEL] Error processing {data_type}: {e}", file=sys.stderr)
-                import traceback
-                traceback.print_exc()
+                debug_print(f"[OTEL] Error processing {data_type}: {e}")
             self.otel_queue.task_done()
 
     async def _process_traces(self, traces_req):
@@ -167,52 +523,81 @@ class ClaudeAdapter(BaseAdapter):
             for scope_span in resource_span.scope_spans:
                 for span in scope_span.spans:
                     attrs = {attr.key: self._get_attr_value(attr.value) for attr in span.attributes}
-                    
                     span_name = span.name.lower()
-                    print(f"[OTEL] Trace span: {span_name} | attrs: {list(attrs.keys())}", file=sys.stderr)
-                    
-                    # Tool execution spans (bash, edit, create, etc.)
+
+                    # File operations
+                    if any(kw in span_name for kw in ['file', 'write', 'read', 'edit', 'create']):
+                        file_path = (attrs.get('file.path') or attrs.get('file_path') or
+                                    attrs.get('path') or attrs.get('tool.file_path'))
+
+                        if file_path:
+                            from .base import register_file_ownership
+
+                            if not os.path.isabs(file_path):
+                                file_path = os.path.join(self.working_dir, file_path)
+
+                            if not is_path_within_dir(file_path, self.working_dir):
+                                continue
+
+                            register_file_ownership(file_path, self.agent_id)
+                            register_agent_activity(self.agent_id)
+
+                            content = None
+                            if os.path.exists(file_path) and os.path.isfile(file_path):
+                                try:
+                                    with open(file_path, 'r', encoding='utf-8') as f:
+                                        content = f.read()
+                                except:
+                                    pass
+
+                            operation = (attrs.get('operation', 'modified') or 'modified').lower()
+                            if operation in ('create', 'created', 'new'):
+                                file_event_type = "file_created"
+                            elif operation in ('delete', 'deleted', 'remove', 'removed'):
+                                file_event_type = "file_deleted"
+                            else:
+                                file_event_type = "file_modified"
+
+                            dedup_key = f"{file_path}:{operation}:{span.start_time_unix_nano}"
+                            if dedup_key not in self._seen_file_operations:
+                                self._seen_file_operations.add(dedup_key)
+                                await self.emit_event(file_event_type, {
+                                    "file_path": file_path,
+                                    "content": content,
+                                    "source": "otel"
+                                })
+
+                    # Tool execution spans
                     if 'tool' in span_name or 'execute' in span_name:
                         tool_name = attrs.get('tool.name') or attrs.get('operation', 'unknown')
                         tool_input = attrs.get('tool.input', '')
-                        
-                        # Create dedup key
+
                         start_time = span.start_time_unix_nano
                         dedup_key = f"{tool_name}:{start_time}"
-                        
+
                         if dedup_key not in self._seen_tool_calls:
                             self._seen_tool_calls.add(dedup_key)
-                            
-                            print(f"[OTEL] Tool call: {tool_name}", file=sys.stderr)
+                            register_agent_activity(self.agent_id)
                             await self.emit_event("tool_call", {
                                 "tool_name": tool_name,
                                 "command": tool_input,
                                 "type": "local",
-                                "attributes": attrs
+                                "source": "otel"
                             })
 
-                    # API request spans (token usage, model info)
+                    # API request spans (token usage)
                     if 'api' in span_name or 'request' in span_name or 'claude' in span_name:
                         model = attrs.get('model', 'claude-sonnet-4-5')
                         input_tokens = int(attrs.get('input_tokens', 0))
                         output_tokens = int(attrs.get('output_tokens', 0))
-                        
+
                         if input_tokens > 0 or output_tokens > 0:
-                            print(f"[OTEL] API request: {model} ({input_tokens} in, {output_tokens} out)", file=sys.stderr)
                             await self.emit_event("token_usage", {
                                 "model": model,
                                 "input_tokens": input_tokens,
                                 "output_tokens": output_tokens,
-                                "total": input_tokens + output_tokens,
-                                "attributes": attrs
+                                "total": input_tokens + output_tokens
                             })
-
-                    # Session lifecycle
-                    if 'session' in span_name:
-                        if 'start' in span_name:
-                            await self.emit_event("session_started", {"attributes": attrs})
-                        elif 'end' in span_name or 'stop' in span_name:
-                            await self.emit_event("session_ended", {"attributes": attrs})
 
     async def _process_metrics(self, metrics_req):
         """Process metrics from Claude Code"""
@@ -220,9 +605,7 @@ class ClaudeAdapter(BaseAdapter):
             for scope_metric in resource_metric.scope_metrics:
                 for metric in scope_metric.metrics:
                     metric_name = metric.name.lower()
-                    print(f"[OTEL] Metric: {metric_name}", file=sys.stderr)
 
-                    # Get data points
                     data_points = []
                     if metric.HasField('sum'):
                         data_points = metric.sum.data_points
@@ -231,63 +614,31 @@ class ClaudeAdapter(BaseAdapter):
                     elif metric.HasField('gauge'):
                         data_points = metric.gauge.data_points
 
-                    # Token usage metrics
                     if 'token' in metric_name:
                         for dp in data_points:
                             attrs = {attr.key: self._get_attr_value(attr.value) for attr in dp.attributes}
                             token_type = attrs.get('type', 'unknown')
                             model = attrs.get('model', 'claude')
-                            
-                            total = 0
-                            if hasattr(dp, 'as_int'):
-                                total = dp.as_int
-                            elif hasattr(dp, 'value'):
-                                total = int(dp.value)
-                            
-                            print(f"[OTEL] Token metric: {token_type} = {total}", file=sys.stderr)
+
+                            total = getattr(dp, 'as_int', 0) or int(getattr(dp, 'value', 0))
+
                             await self.emit_event("token_usage", {
                                 "type": token_type,
                                 "model": model,
                                 "total": total,
                                 "input_tokens": total if token_type == 'input' else 0,
-                                "output_tokens": total if token_type == 'output' else 0,
-                                "attributes": attrs
+                                "output_tokens": total if token_type == 'output' else 0
                             })
-
-                    # Cost metrics
-                    if 'cost' in metric_name:
-                        for dp in data_points:
-                            attrs = {attr.key: self._get_attr_value(attr.value) for attr in dp.attributes}
-                            cost = getattr(dp, 'as_double', 0.0) or float(getattr(dp, 'value', 0.0))
-                            
-                            print(f"[OTEL] Cost metric: ${cost}", file=sys.stderr)
-                            await self.emit_event("cost_update", {
-                                "cost": cost,
-                                "attributes": attrs
-                            })
-
-                    # Active sessions
-                    if 'session' in metric_name and 'active' in metric_name:
-                        for dp in data_points:
-                            count = getattr(dp, 'as_int', 0)
-                            print(f"[OTEL] Active sessions: {count}", file=sys.stderr)
 
     async def _process_logs(self, logs_req):
-        """Process log events from Claude Code.
-
-        NOTE: File operations are handled by the file watcher in base.py
-        which provides actual code content via git diff or file reading.
-        OTEL logs don't include the actual code changes, so we only log them for debugging.
-        """
+        """Process log events from Claude Code"""
         for resource_log in logs_req.resource_logs:
             for scope_log in resource_log.scope_logs:
                 for log_record in scope_log.log_records:
-                    # Extract log body for debugging
                     body = ""
                     if log_record.body.HasField('string_value'):
                         body = log_record.body.string_value
-
-                    print(f"[OTEL] Log: {body[:100]}", file=sys.stderr)
+                    debug_print(f"[OTEL] Log: {body[:100]}")
 
     def _get_attr_value(self, value):
         """Extract value from OTLP AnyValue"""
@@ -304,7 +655,6 @@ class ClaudeAdapter(BaseAdapter):
     async def _run_otel_server(self):
         """Run the FastAPI OTLP receiver server"""
         if not FASTAPI_AVAILABLE:
-            print("[OTEL] FastAPI not available, cannot start OTLP receiver", file=sys.stderr)
             return
 
         app = self._create_otel_app()
@@ -313,57 +663,62 @@ class ClaudeAdapter(BaseAdapter):
             host="127.0.0.1",
             port=self.port,
             log_level="warning",
-            access_log=False
+            access_log=False,
         )
         server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None
         await server.serve()
 
     async def run(self):
-        """Main run loop with OTLP support"""
-        if not PROTOBUF_AVAILABLE or not FASTAPI_AVAILABLE:
-            print("[OTEL] Missing dependencies, falling back to base adapter", file=sys.stderr)
-            print("[OTEL] Install with: pip install opentelemetry-proto fastapi uvicorn", file=sys.stderr)
-            await super().run()
-            return
+        """Main run loop with hooks-based state tracking + OTEL telemetry"""
 
-        self.port = find_free_port()
-        print(f"[OTEL] Starting OTLP receiver on port {self.port}", file=sys.stderr)
-
-        # Start the OTLP receiver server
-        self.otel_server_task = asyncio.create_task(self._run_otel_server())
-
-        # Start the queue processor
-        self.otel_processor_task = asyncio.create_task(self._process_otel_queue())
-
-        # Give server time to start
-        await asyncio.sleep(0.5)
-        print(f"[OTEL] OTLP receiver ready at http://127.0.0.1:{self.port}", file=sys.stderr)
-
-        # Set environment variables for Claude Code
-        self.env = os.environ.copy()
-        self.env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-        self.env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
-        self.env["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{self.port}"
-        self.env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = f"http://127.0.0.1:{self.port}/v1/traces"
-        self.env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = f"http://127.0.0.1:{self.port}/v1/metrics"
-        self.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = f"http://127.0.0.1:{self.port}/v1/logs"
-        self.env["OTEL_METRICS_EXPORTER"] = "otlp"
-        self.env["OTEL_LOGS_EXPORTER"] = "otlp"
-        self.env["OTEL_LOG_USER_PROMPTS"] = "1"  # Enable user prompt logging
-
-        print(f"[OTEL] Environment configured for Claude Code telemetry", file=sys.stderr)
+        # Set up hooks configuration FIRST
+        self._setup_hooks_config()
 
         try:
+            # Set up OTEL if available
+            if PROTOBUF_AVAILABLE and FASTAPI_AVAILABLE:
+                self.port = find_free_port()
+                debug_print(f"[OTEL] Starting OTLP receiver on port {self.port}")
+
+                self.otel_server_task = asyncio.create_task(self._run_otel_server())
+                self.otel_processor_task = asyncio.create_task(self._process_otel_queue())
+                await asyncio.sleep(0.5)
+
+                # Set environment variables for Claude Code
+                self.env = os.environ.copy()
+                self.env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+                self.env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
+                self.env["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{self.port}"
+                self.env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = f"http://127.0.0.1:{self.port}/v1/traces"
+                self.env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = f"http://127.0.0.1:{self.port}/v1/metrics"
+                self.env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = f"http://127.0.0.1:{self.port}/v1/logs"
+                self.env["OTEL_METRICS_EXPORTER"] = "otlp"
+                self.env["OTEL_LOGS_EXPORTER"] = "otlp"
+            else:
+                self.env = os.environ.copy()
+
+            # Start state file monitor
+            self.state_monitor_task = asyncio.create_task(self._monitor_state_file())
+
+            # Run the base adapter (PTY, subprocess monitoring, etc.)
             await super().run()
+
         finally:
-            # Cancel the server and processor tasks
+            # Clean up
+            if self.state_monitor_task:
+                self.state_monitor_task.cancel()
+                try:
+                    await self.state_monitor_task
+                except asyncio.CancelledError:
+                    pass
+
             if self.otel_server_task:
                 self.otel_server_task.cancel()
                 try:
                     await self.otel_server_task
                 except asyncio.CancelledError:
                     pass
-                print("[OTEL] OTLP receiver stopped", file=sys.stderr)
 
             if self.otel_processor_task:
                 self.otel_processor_task.cancel()
@@ -371,4 +726,5 @@ class ClaudeAdapter(BaseAdapter):
                     await self.otel_processor_task
                 except asyncio.CancelledError:
                     pass
-                print("[OTEL] Queue processor stopped", file=sys.stderr)
+
+            self._cleanup_hooks_config()

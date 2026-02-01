@@ -24,6 +24,10 @@ def server(args):
         sys.exit(1)
 
 def run(args):
+    import time
+    import signal
+    import socketio
+
     agent_type = args.agent
     agent_id = f"{agent_type}-{os.getpid()}"
     workspace = os.path.abspath(args.w)
@@ -38,25 +42,94 @@ def run(args):
         sys.exit(1)
 
     monitor = Monitor(agent_id, agent_type, args.agent_command, workspace)
-    
+    interrupted = False
+    error_occurred = False
+
+    def emit_stopped_sync(reason="finished", return_code=0):
+        """
+        Emit agent_stopped event synchronously.
+
+        CRITICAL: This is the MOST RELIABLE way to ensure the stopped event reaches
+        the backend. Async emits during Ctrl+C can be interrupted before they're sent.
+        This sync emit happens AFTER asyncio has shut down, using the raw socket.
+        """
+        try:
+            # Create a fresh socket connection if needed
+            sio = None
+            if monitor.sio.connected:
+                sio = monitor.sio
+            else:
+                # Try to reconnect
+                try:
+                    sio = socketio.Client()
+                    sio.connect("http://localhost:8787", wait_timeout=2)
+                except Exception:
+                    print(f"[AgentViz Debug] Could not reconnect socket", file=sys.stderr)
+                    return
+
+            if sio and sio.connected:
+                # Emit agent_stopped
+                sio.emit("agent_event", {
+                    "agent_id": agent_id,
+                    "agent_type": agent_type,
+                    "event_type": "agent_stopped",
+                    "timestamp": time.time(),
+                    "working_dir": workspace,
+                    "metadata": {"return_code": return_code, "reason": reason}
+                })
+
+                # Also emit state_change for proper frontend update
+                sio.emit("agent_event", {
+                    "agent_id": agent_id,
+                    "agent_type": agent_type,
+                    "event_type": "state_change",
+                    "timestamp": time.time(),
+                    "working_dir": workspace,
+                    "metadata": {"state": "stopped", "source": reason, "return_code": return_code}
+                })
+
+                # CRITICAL: Wait for events to be sent before disconnecting
+                time.sleep(0.3)
+                print(f"[AgentViz Debug] Emitted agent_stopped for {agent_id} (reason={reason})", file=sys.stderr)
+
+                # Disconnect if we created a new connection
+                if sio != monitor.sio:
+                    sio.disconnect()
+
+        except Exception as e:
+            print(f"[AgentViz Debug] Failed to emit agent_stopped: {e}", file=sys.stderr)
+
     try:
         print(f"[AgentViz Debug] Starting asyncio run for monitor.", file=sys.stderr)
         asyncio.run(monitor.run())
         print(f"[AgentViz Debug] Asyncio run for monitor completed.", file=sys.stderr)
     except KeyboardInterrupt:
+        interrupted = True
         print("\nAgent monitoring interrupted by user.")
+    except Exception as e:
+        error_occurred = True
+        print(f"Error: {e}", file=sys.stderr)
     finally:
+        # ALWAYS emit agent_stopped in finally block
+        # The async emit during adapter shutdown might not have reached the backend
+        # This sync emit is the most reliable way to ensure the state updates
+        if interrupted:
+            emit_stopped_sync(reason="interrupted", return_code=-2)
+        elif error_occurred:
+            emit_stopped_sync(reason="error", return_code=1)
+        else:
+            # Normal completion - still emit to ensure backend knows
+            emit_stopped_sync(reason="finished", return_code=0)
+
+        # Disconnect socket
+        if monitor.sio.connected:
+            try:
+                monitor.sio.disconnect()
+                print(f"[AgentViz Debug] SocketIO disconnected.", file=sys.stderr)
+            except Exception:
+                pass
+
         print(f"\nAgentViz finished monitoring {agent_id}.", file=sys.stderr)
-        # Attempt to explicitly stop the event loop as a workaround for hanging
-        try:
-            loop = asyncio.get_event_loop()
-            if not loop.is_closed():
-                print(f"[AgentViz Debug] Attempting to stop asyncio loop.", file=sys.stderr)
-                loop.stop()
-                loop.close()
-                print(f"[AgentViz Debug] Asyncio loop stopped and closed.", file=sys.stderr)
-        except Exception as e:
-            print(f"[AgentViz Debug] Error stopping asyncio loop: {e}", file=sys.stderr)
 
 def main():
     print(f"[AgentViz Debug] sys.path: {sys.path}", file=sys.stderr)

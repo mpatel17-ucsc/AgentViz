@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Agent, AgentState, Filters, AgentEvent, Subprocess } from '../types/agent';
+import { Agent, AgentState, Filters, AgentEvent, Subprocess, BackendState, mapBackendStateToFrontend } from '../types/agent';
 
 interface AgentStore {
   // State
@@ -147,13 +147,71 @@ export const useAgentStore = create<AgentStore>()(
             };
           }
 
-          // Update existing agent based on event
+          // GUARD: Don't update agents that are already completed (prevents late events from overwriting)
+          // Exception: agent_stopped and state_change(stopped) can always update (to handle edge cases)
+          if (agent.state === 'completed') {
+            const isStoppedEvent = event.event_type === 'agent_stopped' ||
+              (event.event_type === 'state_change' && event.metadata?.state === 'stopped');
+            if (!isStoppedEvent) {
+              console.log(`[Store] Ignoring ${event.event_type} for completed agent ${event.agent_id}`);
+              return state; // No change
+            }
+          }
+
+          // Update existing agent based on event (state comes from backend)
           const updates: Partial<Agent> = {
             last_event_at: event.timestamp,
           };
 
-          // Update based on event type
           switch (event.event_type) {
+            case 'state_change':
+              // Handle hook-based state changes from backend
+              const backendState = event.metadata?.state as BackendState;
+              if (backendState) {
+                const newState = mapBackendStateToFrontend(backendState);
+
+                // Don't override completed state with anything except stopped
+                if (agent.state === 'completed' && backendState !== 'stopped') {
+                  console.log(`[Store] Ignoring state_change ${backendState} for completed agent`);
+                  break;
+                }
+
+                updates.state = newState;
+
+                // Update message based on state
+                switch (backendState) {
+                  case 'starting':
+                    updates.last_message = 'Starting session...';
+                    break;
+                  case 'in_progress':
+                    updates.last_message = 'Processing...';
+                    break;
+                  case 'working':
+                    const tool = event.metadata?.tool;
+                    updates.last_message = tool
+                      ? `Executing: ${tool}`
+                      : 'Executing tool...';
+                    break;
+                  case 'ready':
+                    updates.last_message = 'Ready for next task...';
+                    break;
+                  case 'idle':
+                    updates.last_message = 'Idle - waiting for input';
+                    break;
+                  case 'waiting_for_input':
+                    updates.last_message = 'Waiting for approval...';
+                    updates.needs_attention = true;
+                    break;
+                  case 'stopped':
+                    updates.last_message = 'Session ended';
+                    updates.completed_at = event.timestamp;
+                    break;
+                }
+
+                console.log(`[Store] State change: ${backendState} -> ${newState} for agent ${event.agent_id}`);
+              }
+              break;
+
             case 'waiting_for_input':
               updates.state = 'waiting_for_input';
               updates.needs_attention = true;
@@ -161,75 +219,60 @@ export const useAgentStore = create<AgentStore>()(
               break;
             case 'error':
               updates.state = 'error';
-              updates.needs_attention = true;
               updates.error_message = event.metadata?.error || event.metadata?.message || 'Unknown error';
               break;
-            case 'agent_stopped':
-              // Agent session ended (Ctrl+C or exit) - mark as COMPLETED
-              updates.state = 'completed';
-              updates.completed_at = event.timestamp;
-              const returnCode = event.metadata?.return_code ?? 0;
-              if (returnCode !== 0) {
-                updates.error_message = `Exited with code ${returnCode}`;
-              }
-              break;
             case 'task_completed':
-              // Agent finished a task but is still running - go to READY/IDLE
               updates.state = 'ready';
-              updates.needs_attention = false;
               updates.last_message = 'Ready for next task...';
               break;
             case 'agent_started':
-              // Agent just started - it's in READY state waiting for user's first task
               updates.state = 'ready';
-              updates.needs_attention = false;
               updates.last_message = 'Ready for task...';
               break;
+            case 'agent_stopped':
+              // Process exited - mark as completed
+              updates.state = 'completed';
+              updates.completed_at = event.timestamp;
+              updates.last_message = event.metadata?.return_code === 0
+                ? 'Completed successfully'
+                : `Exited with code ${event.metadata?.return_code || 'unknown'}`;
+              break;
             case 'user_prompt':
-              if (!agent.task_summary) {
-                const prompt = event.metadata?.prompt || '';
+              if (!agent.task_summary && event.metadata?.prompt && event.metadata.prompt !== '[user input]') {
+                const prompt = event.metadata.prompt;
                 updates.task_summary = prompt.length > 100 ? prompt.slice(0, 100) + '...' : prompt;
               }
               break;
             case 'file_modified':
             case 'file_created':
-              // Include agent_id in message for debugging
-              updates.last_message = `[${event.agent_id.slice(-8)}] Modified: ${event.metadata?.file_path || 'file'}`;
-              // Work activity - transition from waiting/ready to in_progress
-              if (agent.state === 'waiting_for_input' || agent.state === 'ready') {
+              // File operations indicate the agent is working
+              if (agent.state === 'ready' || agent.state === 'waiting_for_input') {
                 updates.state = 'in_progress';
-                updates.needs_attention = false;
               }
+              const filePath = event.metadata?.file_path || 'file';
+              const fileName = filePath.split('/').pop() || filePath;
+              updates.last_message = `[${event.agent_id.slice(-8)}] Modified: ${fileName}`;
               break;
             case 'tool_call':
-              updates.last_message = `[${event.agent_id.slice(-8)}] Running: ${(event.metadata?.command || '').slice(0, 40)}`;
-              // Work activity - transition from waiting/ready to in_progress
-              if (agent.state === 'waiting_for_input' || agent.state === 'ready') {
+              // Tool calls indicate the agent is working
+              if (agent.state === 'ready' || agent.state === 'waiting_for_input') {
                 updates.state = 'in_progress';
-                updates.needs_attention = false;
               }
+              const toolName = event.metadata?.tool_name || '';
+              const command = event.metadata?.command || '';
+              updates.last_message = toolName
+                ? `[${event.agent_id.slice(-8)}] ${toolName}: ${command.slice(0, 30)}`
+                : `[${event.agent_id.slice(-8)}] Running: ${command.slice(0, 40)}`;
+              break;
+            case 'tool_completed':
+              // Tool finished, but agent may still be processing
+              updates.last_message = `[${event.agent_id.slice(-8)}] Tool completed`;
               break;
             case 'code_generation':
               updates.last_message = `[${event.agent_id.slice(-8)}] Generated code (${event.metadata?.output_tokens || 0} tokens)`;
-              // Work activity - transition from waiting/ready to in_progress
-              if (agent.state === 'waiting_for_input' || agent.state === 'ready') {
-                updates.state = 'in_progress';
-                updates.needs_attention = false;
-              }
               break;
             case 'thinking_start':
               updates.last_message = `[${event.agent_id.slice(-8)}] Thinking...`;
-              if (agent.state === 'waiting_for_input' || agent.state === 'ready') {
-                updates.state = 'in_progress';
-                updates.needs_attention = false;
-              }
-              break;
-            case 'user_prompt':
-              // User provided a prompt - transition to in_progress
-              if (agent.state === 'waiting_for_input' || agent.state === 'ready') {
-                updates.state = 'in_progress';
-                updates.needs_attention = false;
-              }
               break;
             case 'subprocess_started':
               if (event.metadata?.pid) {
@@ -259,6 +302,8 @@ export const useAgentStore = create<AgentStore>()(
                   },
                 };
               }
+              break;
+            default:
               break;
           }
 
