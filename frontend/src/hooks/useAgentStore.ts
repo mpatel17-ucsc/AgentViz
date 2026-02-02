@@ -245,19 +245,11 @@ export const useAgentStore = create<AgentStore>()(
               break;
             case 'file_modified':
             case 'file_created':
-              // File operations indicate the agent is working
-              if (agent.state === 'ready' || agent.state === 'waiting_for_input') {
-                updates.state = 'in_progress';
-              }
               const filePath = event.metadata?.file_path || 'file';
               const fileName = filePath.split('/').pop() || filePath;
               updates.last_message = `[${event.agent_id.slice(-8)}] Modified: ${fileName}`;
               break;
             case 'tool_call':
-              // Tool calls indicate the agent is working
-              if (agent.state === 'ready' || agent.state === 'waiting_for_input') {
-                updates.state = 'in_progress';
-              }
               const toolName = event.metadata?.tool_name || '';
               const command = event.metadata?.command || '';
               updates.last_message = toolName

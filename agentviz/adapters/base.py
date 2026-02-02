@@ -623,6 +623,7 @@ class BaseAdapter:
         self.agent_proc = None
         self.agent_proc_pid = None
         self.agent_proc_returncode = None
+        self._agent_tty = None
         self._agent_stopped_emitted = False
         self._user_interrupt_requested = False
         self.pty_master_fd = None
@@ -638,6 +639,9 @@ class BaseAdapter:
         self._task_in_progress = False
         # Track when user last provided input
         self._last_user_input_at = 0.0
+        # Track waiting_for_input timing and user response
+        self._waiting_for_input_since = 0.0
+        self._waiting_for_input_response_received = False
 
         # OTEL-based state detection
         # Track when we last received OTEL work activity (tool_call, token_usage, etc.)
@@ -671,10 +675,18 @@ class BaseAdapter:
         # This disables screen-based "ready" detection which causes flickering
         # when agents are thinking but not producing output
         self._use_hooks_for_state = False
+        # Allow disabling idle timeout fallback for hook-based adapters
+        self._enable_idle_timeout_fallback = True
 
         # Current internal state (used by idle timeout fallback)
         # Possible values: idle, starting, thinking, in_progress, working, ready, waiting_for_input, stopped
         self._current_state = "idle"
+
+    def _enter_waiting_for_input_state(self):
+        """Transition to waiting_for_input and reset response tracking."""
+        self._current_state = "waiting_for_input"
+        self._waiting_for_input_since = time.time()
+        self._waiting_for_input_response_received = False
 
     async def run(self):
         await self.emit_event("agent_started", {"command": " ".join(self.command)})
@@ -714,6 +726,11 @@ class BaseAdapter:
                 self.pty_master_fd = master_fd
                 self.agent_proc_pid = pid
                 debug_print(f" Agent process started with PID: {pid} via PTY", file=sys.stderr)
+                # Cache controlling TTY (used to detect process handoff)
+                try:
+                    self._agent_tty = psutil.Process(pid).terminal()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    self._agent_tty = None
 
                 # Save original stdin settings and set cbreak mode
                 # cbreak mode passes characters immediately but preserves more terminal behavior
@@ -780,6 +797,36 @@ class BaseAdapter:
                     continue
                 self.agent_proc_returncode = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
                 debug_print(f" Process {pid} exited with code {self.agent_proc_returncode}", file=sys.stderr)
+
+                # Some CLIs (e.g., Claude) may hand off to a new process that keeps the same TTY.
+                # If we can find another live process on the same TTY, treat it as the new agent PID.
+                replacement_pid = None
+                if self._agent_tty:
+                    try:
+                        candidates = []
+                        for proc in psutil.process_iter(['pid', 'terminal', 'create_time']):
+                            try:
+                                if proc.info.get('pid') == pid:
+                                    continue
+                                if proc.info.get('terminal') == self._agent_tty:
+                                    candidates.append(proc)
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                continue
+                        if candidates:
+                            # Choose the newest process on this TTY
+                            candidates.sort(key=lambda p: p.info.get('create_time', 0.0), reverse=True)
+                            replacement_pid = candidates[0].info.get('pid')
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        replacement_pid = None
+
+                if replacement_pid:
+                    debug_print(f" Detected TTY handoff: adopting PID {replacement_pid} for agent", file=sys.stderr)
+                    self.agent_proc_pid = replacement_pid
+                    try:
+                        self._agent_tty = psutil.Process(replacement_pid).terminal()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                    continue
 
                 # CRITICAL: Set process_exited BEFORE emitting events
                 # This blocks all other events from background tasks/hooks
@@ -885,7 +932,7 @@ class BaseAdapter:
                     if current_time - last_seen > self._approval_dedup_window:
                         debug_print(f" Detected NEW user approval request in output", file=sys.stderr)
                         # Keep internal state in sync so idle fallback doesn't misclassify this as active work.
-                        self._current_state = "waiting_for_input"
+                        self._enter_waiting_for_input_state()
                         asyncio.create_task(self.emit_event("waiting_for_input", {
                             "prompt": output_str.strip()[:300]
                         }))
@@ -933,6 +980,11 @@ class BaseAdapter:
                 is_rejection = any(kw in lower_output for kw in rejection_keywords)
 
                 if is_rejection and self._current_state == "waiting_for_input":
+                    # Only treat as rejection AFTER the user has responded to the prompt.
+                    # This avoids false positives when the prompt itself contains words like "deny".
+                    if not self._waiting_for_input_response_received:
+                        debug_print(" Detected rejection keywords in output while waiting_for_input, but no user response yet - ignoring", file=sys.stderr)
+                        return
                     debug_print(f" Detected REJECTION in output while waiting_for_input -> transitioning to READY", file=sys.stderr)
                     self._current_state = "ready"
                     self._task_in_progress = False
@@ -1022,6 +1074,7 @@ class BaseAdapter:
                             # 1. Fire a hook (Stop/AfterAgent) when it finishes processing the response → ready
                             # 2. Go idle and the timeout fallback will transition to ready
                             self._last_user_input_at = now
+                            self._waiting_for_input_response_received = True
                             self._last_screen_change_at = now
                             self._terminal_activity_detected = True
                             # Don't set _task_in_progress = True here
@@ -1452,6 +1505,9 @@ class BaseAdapter:
         - Use LONGER timeout for working states (avoid false positives during thinking)
         - When idle detected, transition to "ready"
         """
+        if not self._enable_idle_timeout_fallback:
+            debug_print("[IDLE_FALLBACK] Disabled by adapter", file=sys.stderr)
+            return
         # Different timeouts based on state
         WAITING_FOR_INPUT_TIMEOUT = 3.0  # Short - agent responds quickly after user input
         WORKING_STATE_TIMEOUT = 8.0  # Longer - avoid false positives during thinking
@@ -1466,11 +1522,17 @@ class BaseAdapter:
 
             # Determine which timeout to use based on current state
             if self._current_state == "waiting_for_input":
-                # User just responded (yes or no) - agent will either:
-                # 1. Continue working (approval) -> hooks will fire
-                # 2. Go idle (denial/cancel) -> need fast detection
-                idle_timeout = WAITING_FOR_INPUT_TIMEOUT
-                should_check_idle = True
+                # Only apply the waiting_for_input timeout AFTER the user has responded.
+                # If the user has not responded yet, stay in waiting_for_input indefinitely.
+                if self._waiting_for_input_response_received:
+                    # User just responded (yes or no) - agent will either:
+                    # 1. Continue working (approval) -> hooks will fire
+                    # 2. Go idle (denial/cancel) -> need fast detection
+                    idle_timeout = WAITING_FOR_INPUT_TIMEOUT
+                    should_check_idle = True
+                else:
+                    should_check_idle = False
+                    idle_timeout = WAITING_FOR_INPUT_TIMEOUT
             elif self._task_in_progress and self._current_state in ("thinking", "working", "in_progress"):
                 idle_timeout = WORKING_STATE_TIMEOUT
                 should_check_idle = True
@@ -1535,7 +1597,10 @@ class BaseAdapter:
         """
         # For hook-based adapters, run a lightweight idle detection as fallback
         if self._use_hooks_for_state:
-            debug_print("[ACTIVITY] Hooks are primary, but idle timeout fallback is ENABLED", file=sys.stderr)
+            if self._enable_idle_timeout_fallback:
+                debug_print("[ACTIVITY] Hooks are primary, idle timeout fallback is ENABLED", file=sys.stderr)
+            else:
+                debug_print("[ACTIVITY] Hooks are primary, idle timeout fallback is DISABLED", file=sys.stderr)
             await self._idle_timeout_fallback_loop()
             return
 

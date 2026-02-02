@@ -378,6 +378,10 @@ async def agent_event(sid, data: dict):
     working_dir = data.get('working_dir', '')
     metadata = data.get('metadata', {})
 
+    # Ignore token_usage events for Claude to avoid spurious in_progress transitions
+    if event_type == "token_usage" and agent_type in ("claude", "claude-code"):
+        return
+
     print(f"[BACKEND] Received event: {event_type} from agent_id={agent_id} (type={agent_type})")
 
     if not agent_id:
