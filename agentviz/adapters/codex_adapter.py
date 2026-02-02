@@ -78,9 +78,9 @@ class CodexAdapter(BaseAdapter):
         self._enable_subprocess_snapshot = False
 
         # IMPORTANT: Codex notify only fires on agent-turn-complete
-        # We MUST use screen-based detection as supplement for other states
-        # (approval prompts, thinking indicators, etc.)
-        self._use_hooks_for_state = False  # Enable screen-based detection
+        # We use hooks as primary (for agent-turn-complete) with idle timeout fallback
+        # The fallback catches cases where agent goes idle without the hook firing
+        self._use_hooks_for_state = True  # Use hooks + idle fallback
 
         # State tracking
         self._state_dir = None

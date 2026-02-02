@@ -341,17 +341,33 @@ if __name__ == "__main__":
 
                             elif event_type == "user_prompt_submit":
                                 # UserPromptSubmit fires when user submits a prompt,
-                                # BEFORE Claude starts processing. This is the "thinking" state.
-                                # The agent will transition to "working" when PreToolUse fires,
-                                # or to "ready" when Stop fires (if no tools were used).
-                                self._current_state = "thinking"
-                                self._task_in_progress = True
-                                await self.emit_event("state_change", {
-                                    "state": "in_progress",  # Maps to in_progress for frontend
-                                    "source": "hook",
-                                    "hook_event": event_type,
-                                    "detail": "thinking"  # Distinguish from "working"
-                                })
+                                # BEFORE Claude starts processing.
+                                #
+                                # IMPORTANT: This hook fires for BOTH:
+                                # 1. New tasks (user types a request and presses Enter)
+                                # 2. Permission responses (user presses Enter to accept/deny)
+                                #
+                                # We need to distinguish between these cases:
+                                # - If we're in waiting_for_input state, this is a RESPONSE to a permission
+                                #   prompt. We should NOT transition to in_progress because the user might
+                                #   have denied the permission, and we should wait for the actual outcome
+                                #   (Stop hook will fire when Claude finishes responding to the denial).
+                                # - If we're NOT in waiting_for_input, this is a new task submission.
+                                #
+                                if self._current_state == "waiting_for_input":
+                                    debug_print(f"[HOOKS] user_prompt_submit while waiting_for_input - NOT transitioning to in_progress (awaiting outcome)")
+                                    # Don't change state - wait for Stop (denial) or PreToolUse (approval)
+                                    # The user might have denied, in which case Stop will fire and transition to ready
+                                else:
+                                    # New task submission - transition to thinking/in_progress
+                                    self._current_state = "thinking"
+                                    self._task_in_progress = True
+                                    await self.emit_event("state_change", {
+                                        "state": "in_progress",  # Maps to in_progress for frontend
+                                        "source": "hook",
+                                        "hook_event": event_type,
+                                        "detail": "thinking"  # Distinguish from "working"
+                                    })
 
                             elif event_type == "pre_tool_use":
                                 # PreToolUse fires before a tool executes.

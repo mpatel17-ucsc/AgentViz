@@ -376,17 +376,32 @@ if __name__ == "__main__":
 
                             elif event_type == "before_agent":
                                 # BeforeAgent fires "after user submission but before planning"
-                                # This IS the "thinking" state - agent is processing internally
-                                # but hasn't started executing tools yet.
                                 # See: https://geminicli.com/docs/hooks/reference/
-                                self._current_state = "thinking"
-                                self._task_in_progress = True
-                                await self.emit_event("state_change", {
-                                    "state": "in_progress",  # Maps to in_progress for frontend
-                                    "source": "hook",
-                                    "hook_event": event_type,
-                                    "detail": "thinking"  # Distinguish from "working"
-                                })
+                                #
+                                # IMPORTANT: This hook fires for BOTH:
+                                # 1. New tasks (user types a request and presses Enter)
+                                # 2. Permission responses (user presses Enter to accept/deny)
+                                #
+                                # We need to distinguish between these cases:
+                                # - If we're in waiting_for_input state, this is a RESPONSE to a permission
+                                #   prompt. We should NOT transition to in_progress because the user might
+                                #   have denied the permission, and we should wait for the actual outcome
+                                #   (AfterAgent hook will fire when Gemini finishes responding to denial).
+                                # - If we're NOT in waiting_for_input, this is a new task submission.
+                                #
+                                if self._current_state == "waiting_for_input":
+                                    debug_print(f"[HOOKS] before_agent while waiting_for_input - NOT transitioning to in_progress (awaiting outcome)")
+                                    # Don't change state - wait for AfterAgent (denial) or BeforeTool (approval)
+                                else:
+                                    # New task submission - transition to thinking/in_progress
+                                    self._current_state = "thinking"
+                                    self._task_in_progress = True
+                                    await self.emit_event("state_change", {
+                                        "state": "in_progress",  # Maps to in_progress for frontend
+                                        "source": "hook",
+                                        "hook_event": event_type,
+                                        "detail": "thinking"  # Distinguish from "working"
+                                    })
 
                             elif event_type == "before_tool":
                                 # BeforeTool fires before tool invocation

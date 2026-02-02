@@ -289,10 +289,13 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
         agent["task_started"] = False
 
     elif event_type in work_activity_events:
-        # Work activity detected - transition to IN_PROGRESS from any non-error state
-        # This catches cases where OTEL events arrive before/without user_prompt
-        # FIXED: Also allow transition from COMPLETED if new work is happening
-        if old_state in (AgentState.READY.value, AgentState.WAITING_FOR_INPUT.value, AgentState.COMPLETED.value):
+        # Work activity detected - transition to IN_PROGRESS from READY or COMPLETED only
+        #
+        # Do NOT transition from WAITING_FOR_INPUT here!
+        # When user says "no" to a permission prompt, the agent cancels the request
+        # and should go to ready/idle. But the agent may emit token_usage events
+        # while responding. Let hooks (Stop/AfterAgent) handle the transition to ready.
+        if old_state in (AgentState.READY.value, AgentState.COMPLETED.value):
             new_state = AgentState.IN_PROGRESS.value
             agent["needs_attention"] = False
             agent["task_started"] = True
