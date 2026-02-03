@@ -78,9 +78,9 @@ class CodexAdapter(BaseAdapter):
         self._enable_subprocess_snapshot = False
 
         # IMPORTANT: Codex notify only fires on agent-turn-complete
-        # We use hooks as primary (for agent-turn-complete) with idle timeout fallback
-        # The fallback catches cases where agent goes idle without the hook firing
-        self._use_hooks_for_state = True  # Use hooks + idle fallback
+        # Use hooks as primary; disable idle timeout fallback to avoid drift
+        self._use_hooks_for_state = True
+        self._enable_idle_timeout_fallback = False
 
         # State tracking
         self._state_dir = None
@@ -269,6 +269,11 @@ if __name__ == "__main__":
                             # Map Codex events to state transitions
                             # NOTE: Only agent-turn-complete is reliably available via notify
                             if event_type == "agent-turn-complete":
+                                # If we're waiting for input and the user has NOT responded yet,
+                                # ignore a spurious turn-complete/ready transition.
+                                if self._current_state == "waiting_for_input" and not self._waiting_for_input_response_received:
+                                    debug_print("[HOOKS] agent-turn-complete received while still waiting for input (no user response) - ignoring", file=sys.stderr)
+                                    continue
                                 # Agent finished a turn - task complete, ready for input
                                 self._current_state = "ready"
                                 self._task_in_progress = False
@@ -297,7 +302,7 @@ if __name__ == "__main__":
                             # detection in base.py
                             elif event_type == "approval-requested":
                                 debug_print("[HOOKS] WARNING: approval-requested received but this event is not officially supported via notify")
-                                self._current_state = "waiting_for_input"
+                                self._enter_waiting_for_input_state()
 
                                 await self.emit_event("waiting_for_input", {
                                     "prompt": "Approval requested",

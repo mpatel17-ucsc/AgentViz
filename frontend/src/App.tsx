@@ -12,7 +12,6 @@ import {
   Chip,
 } from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
-import RefreshIcon from '@mui/icons-material/Refresh';
 import DeleteIcon from '@mui/icons-material/Delete';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import { useAgentStore } from './hooks/useAgentStore';
@@ -158,10 +157,6 @@ function App() {
     };
   }, [updateUserLastSeen]);
 
-  const handleRefresh = useCallback(() => {
-    window.location.reload();
-  }, []);
-
   const handleClearAll = useCallback(() => {
     clearAgents();
     setEvents([]);
@@ -213,12 +208,6 @@ function App() {
                 </Badge>
               </Tooltip>
             )}
-
-            <Tooltip title="Refresh">
-              <IconButton color="inherit" onClick={handleRefresh} size="small">
-                <RefreshIcon />
-              </IconButton>
-            </Tooltip>
 
             <Tooltip title="Clear All Agents">
               <IconButton color="inherit" onClick={handleClearAll} size="small">

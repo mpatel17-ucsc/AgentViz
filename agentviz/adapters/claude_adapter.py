@@ -66,6 +66,8 @@ class ClaudeAdapter(BaseAdapter):
         # IMPORTANT: Use hooks for state tracking, not screen-based detection
         # This prevents flickering when agent is thinking but not producing output
         self._use_hooks_for_state = True
+        # Disable idle timeout fallback for Claude (use hooks only)
+        self._enable_idle_timeout_fallback = False
 
         # State tracking via hooks
         self._state_file = None
@@ -394,6 +396,11 @@ if __name__ == "__main__":
                                 })
 
                             elif event_type == "stop":
+                                # If we're waiting for input and the user has NOT responded yet,
+                                # ignore a spurious Stop/ready transition.
+                                if self._current_state == "waiting_for_input" and not self._waiting_for_input_response_received:
+                                    debug_print("[HOOKS] stop received while still waiting for input (no user response) - ignoring", file=sys.stderr)
+                                    continue
                                 # Claude finished responding - task complete
                                 self._current_state = "ready"
                                 self._task_in_progress = False
@@ -418,7 +425,7 @@ if __name__ == "__main__":
                             elif event_type == "permission_request":
                                 # PermissionRequest hook - fires when permission dialog appears
                                 # This is the primary hook for detecting waiting for user input
-                                self._current_state = "waiting_for_input"
+                                self._enter_waiting_for_input_state()
                                 await self.emit_event("waiting_for_input", {
                                     "prompt": "Permission required",
                                     "source": "hook"
@@ -431,7 +438,7 @@ if __name__ == "__main__":
 
                             elif event_type == "permission_prompt":
                                 # Notification[permission_prompt] - backup for permission detection
-                                self._current_state = "waiting_for_input"
+                                self._enter_waiting_for_input_state()
                                 await self.emit_event("waiting_for_input", {
                                     "prompt": "Permission required",
                                     "source": "hook"

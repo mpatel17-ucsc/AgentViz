@@ -81,6 +81,8 @@ class GeminiAdapter(BaseAdapter):
         # IMPORTANT: Use hooks for state tracking, not screen-based detection
         # This prevents flickering when agent is thinking but not producing output
         self._use_hooks_for_state = True
+        # Disable idle timeout fallback for Gemini (use hooks only)
+        self._enable_idle_timeout_fallback = False
 
         # State tracking
         self._state_dir = None
@@ -430,6 +432,12 @@ if __name__ == "__main__":
                                 })
 
                             elif event_type == "after_agent":
+                                # If we're waiting for input and the user has NOT responded yet,
+                                # ignore a spurious AfterAgent/ready transition.
+                                # This prevents flicker to READY while the CLI is still prompting.
+                                if self._current_state == "waiting_for_input" and not self._waiting_for_input_response_received:
+                                    debug_print("[HOOKS] after_agent received while still waiting for input (no user response) - ignoring", file=sys.stderr)
+                                    continue
                                 # AfterAgent fires after agent loop completes
                                 # Agent finished responding - ready for next input
                                 self._current_state = "ready"
@@ -448,7 +456,7 @@ if __name__ == "__main__":
 
                             elif event_type == "notification":
                                 # Agent needs user attention (permission, etc.)
-                                self._current_state = "waiting_for_input"
+                                self._enter_waiting_for_input_state()
                                 await self.emit_event("waiting_for_input", {
                                     "prompt": "Notification from Gemini",
                                     "source": "hook"
