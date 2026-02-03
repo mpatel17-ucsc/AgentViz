@@ -117,15 +117,12 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
     Returns (new_state, old_state) tuple. new_state is None if unchanged.
 
     State sources (in priority order):
-    1. Hook-based state_change events (most reliable for Claude/Gemini)
+    1. Hook-based state_change events (most reliable - ALWAYS TRUST THESE)
     2. Specific event types (agent_started, agent_stopped, etc.)
     3. Work activity events (file modifications, tool calls)
     """
     old_state = agent["state"]
     new_state = old_state
-
-    # REMOVED: Restrictive check that prevented transitions from COMPLETED
-    # Now we allow transitions from COMPLETED when appropriate (new work starting)
 
     # Events that indicate user has started interacting with the agent
     user_activity_events = {
@@ -133,20 +130,17 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
     }
 
     # Events that indicate agent is actively working
-    # These should transition to IN_PROGRESS when agent is READY or WAITING_FOR_INPUT
     work_activity_events = {
         "file_created", "file_modified", "file_deleted", "file_operation",
         "tool_call", "subprocess_started", "code_generation",
         "token_usage",  # API calls indicate work
-        "work_activity",  # Generic work activity signal (e.g., output streaming)
+        "work_activity",  # Generic work activity signal
     }
 
-    # State transition rules
-    #
+    # =========================================================================
     # PRIORITY 1: Handle explicit state_change events from hooks
-    # These are the most reliable source of state information for Claude/Gemini
-    # See: https://code.claude.com/docs/en/hooks (Claude Code)
-    # See: https://geminicli.com/docs/hooks/reference/ (Gemini CLI)
+    # THESE ARE THE SOURCE OF TRUTH - ALWAYS TRUST THEM
+    # =========================================================================
     if event_type == "state_change":
         hook_state = metadata.get("state", "")
         hook_detail = metadata.get("detail", "")
@@ -154,8 +148,6 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
 
         print(f"[BACKEND] Hook state_change: {hook_state} (detail={hook_detail}, source={source})")
 
-        # Map hook states to AgentState
-        # Hook states: starting, thinking, in_progress, working, ready, waiting_for_input, idle, stopped
         if hook_state == "starting":
             new_state = AgentState.READY.value
             agent["needs_attention"] = False
@@ -164,11 +156,11 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
             agent["error_message"] = None
 
         elif hook_state in ("thinking", "in_progress", "working"):
+            # TRUST THE HOOK - if it says working, agent is working
             new_state = AgentState.IN_PROGRESS.value
             agent["needs_attention"] = False
-            agent["task_started"] = True
+            agent["task_started"] = True  # Hook confirmed work is happening
             agent["completed_at"] = None
-            # Update message based on detail
             if hook_detail == "thinking":
                 agent["last_message"] = "Thinking..."
             elif hook_detail == "tool_executing":
@@ -178,19 +170,23 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
                 agent["last_message"] = "Working..."
 
         elif hook_state == "ready":
+            # TRUST THE HOOK - if it says ready, agent is ready
             new_state = AgentState.READY.value
             agent["needs_attention"] = False
-            agent["task_started"] = False
-            agent["last_message"] = "Ready for next task..."
+            agent["task_started"] = False  # Task completed or not started
+            agent["last_message"] = "Ready for task..."
 
         elif hook_state == "waiting_for_input":
+            # TRUST THE HOOK - if it says waiting, agent needs input
             new_state = AgentState.WAITING_FOR_INPUT.value
             agent["needs_attention"] = True
             agent["last_message"] = metadata.get("prompt", "Waiting for input...")[:200]
 
         elif hook_state == "idle":
+            # TRUST THE HOOK - idle means ready
             new_state = AgentState.READY.value
             agent["needs_attention"] = False
+            agent["task_started"] = False
             agent["last_message"] = "Idle..."
 
         elif hook_state == "stopped":
@@ -212,32 +208,56 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
             agent["needs_attention"] = True
             agent["error_message"] = metadata.get("error", "Unknown error")
 
-        # If state changed, return early
+        # Return early for state_change events
         if new_state != old_state:
             agent["state"] = new_state
             return (new_state, old_state)
         return (None, old_state)
 
+    # =========================================================================
     # PRIORITY 2: Handle specific lifecycle events
+    # =========================================================================
     elif event_type == "agent_started":
-        # Agent just started - it's in READY state waiting for user's first task
-        # Reset completed state in case this is a restart
         new_state = AgentState.READY.value
         agent["needs_attention"] = False
         agent["last_message"] = "Ready for task..."
         agent["task_started"] = False
-        agent["completed_at"] = None  # Clear completion when restarting
-        agent["error_message"] = None  # Clear any previous errors
+        agent["completed_at"] = None
+        agent["error_message"] = None
 
     elif event_type in user_activity_events:
-        # User provided input - go to IN_PROGRESS
-        # FIXED: Allow transition even from COMPLETED state (new task started)
-        new_state = AgentState.IN_PROGRESS.value
-        agent["needs_attention"] = False
-        agent["task_started"] = True
-        agent["completed_at"] = None  # Clear completion when new work starts
+        # User provided input
+        # Only transition to IN_PROGRESS if:
+        # 1. We're in READY state (starting a new task), OR
+        # 2. We're in WAITING_FOR_INPUT with an active task (responding to prompt)
+        #
+        # For startup scenarios (login prompts, etc.), the agent should emit
+        # state_change(ready) when actually ready, and state_change(working)
+        # when work starts. We rely on those hooks, not on user_prompt events.
+
+        if old_state == AgentState.WAITING_FOR_INPUT.value:
+            # User responded to a prompt
+            if agent.get("task_started"):
+                # Active task - return to working
+                new_state = AgentState.IN_PROGRESS.value
+                agent["needs_attention"] = False
+            else:
+                # No active task - this was likely a startup prompt
+                # Go to READY and wait for hooks to signal actual work
+                new_state = AgentState.READY.value
+                agent["needs_attention"] = False
+
+        elif old_state == AgentState.READY.value:
+            # User starting a new task from READY state
+            # Transition to IN_PROGRESS and mark task as started
+            new_state = AgentState.IN_PROGRESS.value
+            agent["needs_attention"] = False
+            agent["task_started"] = True
+            agent["completed_at"] = None
 
     elif event_type == "waiting_for_input":
+        # Direct waiting_for_input event (not from hook state_change)
+        # This should transition to WAITING_FOR_INPUT
         new_state = AgentState.WAITING_FOR_INPUT.value
         agent["needs_attention"] = True
         agent["last_message"] = metadata.get("prompt", "Waiting for input...")[:200]
@@ -248,29 +268,22 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
         agent["error_message"] = metadata.get("error") or metadata.get("message", "Unknown error")
 
     elif event_type == "agent_stopped":
-        # Agent session has ended (Ctrl+C or exit)
-        # This is ALWAYS COMPLETED regardless of current state
-        # FIXED: This is the most important fix - always honor agent_stopped
-
-        # Handle duplicate agent_stopped events (can happen when both adapter and cli.py emit)
-        # If already completed, only update if we have a more specific reason
+        # Handle duplicate agent_stopped events
         if old_state == AgentState.COMPLETED.value:
             current_reason = agent.get("_stop_reason", "")
             new_reason = metadata.get("reason", "exited")
-            # "interrupted" is more specific than "finished" or "cleanup"
             if new_reason not in ("interrupted", "error") or current_reason in ("interrupted", "error"):
                 print(f"[BACKEND] Ignoring duplicate agent_stopped for {agent['id']} (already completed)")
                 return (None, old_state)
 
         new_state = AgentState.COMPLETED.value
         agent["completed_at"] = time.time()
-        agent["needs_attention"] = False  # Completed agents don't need attention
+        agent["needs_attention"] = False
         agent["task_started"] = False
         return_code = metadata.get("return_code", 0)
         reason = metadata.get("reason", "exited")
-        agent["_stop_reason"] = reason  # Track reason for deduplication
+        agent["_stop_reason"] = reason
 
-        # Set appropriate message based on how the agent stopped
         if return_code == -2 or reason in ("interrupted", "cleanup", "user_interrupt"):
             agent["last_message"] = "Interrupted by user (Ctrl+C)"
         elif return_code != 0 or reason == "error":
@@ -282,31 +295,19 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
         print(f"[BACKEND] Agent {agent['id']} stopped: {reason} (code={return_code})")
 
     elif event_type == "task_completed":
-        # Agent finished a task but is still running, waiting for next task
         new_state = AgentState.READY.value
         agent["needs_attention"] = False
         agent["last_message"] = "Ready for next task..."
         agent["task_started"] = False
 
     elif event_type in work_activity_events:
-        # Work activity detected - transition to IN_PROGRESS from READY or COMPLETED only
-        #
-        # Do NOT transition from WAITING_FOR_INPUT here!
-        # When user says "no" to a permission prompt, the agent cancels the request
-        # and should go to ready/idle. But the agent may emit token_usage events
-        # while responding. Let hooks (Stop/AfterAgent) handle the transition to ready.
-        #
-        # Also ignore background/boot activity before the user has started a task.
-        if not agent.get("task_started"):
-            return (None, old_state)
-        if old_state in (AgentState.READY.value, AgentState.COMPLETED.value):
-            new_state = AgentState.IN_PROGRESS.value
-            agent["needs_attention"] = False
-            agent["task_started"] = True
-            agent["completed_at"] = None  # Clear completion when work resumes
-
-    # Note: thinking_start/thinking_end events are deprecated
-    # We now use work_activity events for state detection
+        # Work activity - only transition if task is already started
+        # This prevents startup activity from triggering IN_PROGRESS
+        if agent.get("task_started"):
+            if old_state in (AgentState.READY.value, AgentState.COMPLETED.value):
+                new_state = AgentState.IN_PROGRESS.value
+                agent["needs_attention"] = False
+                agent["completed_at"] = None
 
     # Update state if changed
     if new_state != old_state:
@@ -338,7 +339,6 @@ def update_subprocess(agent: dict, event_type: str, metadata: dict):
             agent["subprocesses"][pid]["ended_at"] = metadata.get("ended_at", time.time())
             agent["subprocesses"][pid]["exit_code"] = metadata.get("exit_code")
     elif event_type == "tool_call":
-        # Legacy tool_call events also track subprocesses
         if pid not in agent["subprocesses"]:
             agent["subprocesses"][pid] = {
                 "pid": pid,
@@ -363,8 +363,7 @@ async def connect(sid, environ):
         await sio.emit('agent_state', agent, to=sid)
     # Send historical events (marked as historical so frontend doesn't re-apply state changes)
     for agent_id, events in agent_events_store.items():
-        for event in events[-100:]:  # Last 100 events per agent
-            # Mark event as historical so frontend knows not to change state
+        for event in events[-100:]:
             historical_event = {**event, "historical": True}
             await sio.emit('agent_event', historical_event, to=sid)
     print(f"Sent state for {len(agent_store)} agents to {sid}")
@@ -384,7 +383,7 @@ async def agent_event(sid, data: dict):
     working_dir = data.get('working_dir', '')
     metadata = data.get('metadata', {})
 
-    # Ignore token_usage events for Claude to avoid spurious in_progress transitions
+    # Ignore token_usage events for Claude to avoid spurious transitions
     if event_type == "token_usage" and agent_type in ("claude", "claude-code"):
         return
 
@@ -396,20 +395,14 @@ async def agent_event(sid, data: dict):
     # Get or create agent
     agent = get_or_create_agent(agent_id, agent_type, working_dir)
 
-    # Update last event timestamp and message
+    # Update last event timestamp
     agent["last_event_at"] = time.time()
 
-    # Extract task summary from first user_prompt
-    if event_type == "agent_started":
-        cmd = metadata.get("command", "") or ""
-        if len(cmd.strip().split()) > 1:
-            agent["task_started"] = True
-    elif event_type == "user_prompt":
-        agent["task_started"] = True
-
+    # Capture task summary from user prompts
     if event_type == "user_prompt" and not agent["task_summary"]:
         prompt = metadata.get("prompt", "")
-        agent["task_summary"] = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        if prompt and prompt != "[user input]":
+            agent["task_summary"] = prompt[:100] + "..." if len(prompt) > 100 else prompt
 
     # Update last message for display
     if event_type in ("file_modified", "file_created"):
@@ -431,15 +424,15 @@ async def agent_event(sid, data: dict):
     # Store the event
     agent_events_store[agent_id].append(data)
 
-    # Limit events per agent to prevent memory issues
+    # Limit events per agent
     if len(agent_events_store[agent_id]) > 1000:
         agent_events_store[agent_id] = agent_events_store[agent_id][-1000:]
 
-    # Broadcast event to all clients (with agent_id for filtering)
+    # Broadcast event to all clients
     print(f"[BACKEND] Broadcasting event {event_type} for agent_id={agent_id}")
     await sio.emit('agent_event', data)
 
-    # If state changed, broadcast state update for THIS SPECIFIC agent only
+    # If state changed, broadcast state update
     if new_state:
         print(f"[BACKEND] Agent {agent_id} transitioned: {old_state} -> {new_state}")
         await sio.emit('agent_state_change', {
@@ -448,7 +441,6 @@ async def agent_event(sid, data: dict):
             "new_state": new_state,
             "timestamp": time.time(),
         })
-        # Only send THIS agent's state, not all agents
         print(f"[BACKEND] Sending agent_state for agent_id={agent['id']}")
         await sio.emit('agent_state', agent)
 
@@ -464,7 +456,7 @@ async def request_history(sid, data: dict):
 
 @sio.event
 async def mark_agent_seen(sid, data: dict):
-    """Mark an agent as seen by user (clears 'while away' badges)"""
+    """Mark an agent as seen by user"""
     agent_id = data.get('agent_id')
     if agent_id and agent_id in agent_store:
         agent_store[agent_id]["user_last_seen"] = time.time()
@@ -500,6 +492,7 @@ async def control_start_task(sid, data: dict):
         old_state = agent["state"]
         agent["state"] = AgentState.IN_PROGRESS.value
         agent["needs_attention"] = False
+        agent["task_started"] = True
         agent["started_at"] = time.time()
         agent["last_event_at"] = time.time()
         await sio.emit('agent_state', agent)
@@ -536,10 +529,7 @@ def health_check():
 
 @app.get("/dashboard")
 def get_dashboard():
-    """
-    Returns all agents grouped by state with sorting.
-    Agents are sorted by: needs_attention DESC, last_event_at DESC
-    """
+    """Returns all agents grouped by state with sorting."""
     grouped = {
         AgentState.READY.value: [],
         AgentState.IN_PROGRESS.value: [],
@@ -553,7 +543,6 @@ def get_dashboard():
         if state in grouped:
             grouped[state].append(agent)
 
-    # Sort each group: needs_attention first, then by last_event_at (newest first)
     for state in grouped:
         grouped[state].sort(
             key=lambda a: (-int(a.get("needs_attention", False)), -a.get("last_event_at", 0))
@@ -600,7 +589,7 @@ def get_agent_events(agent_id: str):
 
 @app.post("/agents/{agent_id}/mark_seen")
 def mark_seen(agent_id: str):
-    """Mark agent as viewed (clears 'while away' badges)"""
+    """Mark agent as viewed"""
     if agent_id in agent_store:
         agent_store[agent_id]["user_last_seen"] = time.time()
         return {"message": f"Marked agent {agent_id} as seen"}
@@ -609,7 +598,7 @@ def mark_seen(agent_id: str):
 
 @app.post("/agents/{agent_id}/retry")
 def retry_agent(agent_id: str):
-    """Retry a failed agent (moves from ERROR to READY)"""
+    """Retry a failed agent"""
     if agent_id in agent_store:
         agent = agent_store[agent_id]
         if agent["state"] == AgentState.ERROR.value:
@@ -668,6 +657,7 @@ def debug_info():
             event_counts[event_type] = event_counts.get(event_type, 0) + 1
         summary[agent_id] = {
             "state": agent.get("state"),
+            "task_started": agent.get("task_started"),
             "needs_attention": agent.get("needs_attention"),
             "subprocess_count": len(agent.get("subprocesses", {})),
             "total_events": len(events),
