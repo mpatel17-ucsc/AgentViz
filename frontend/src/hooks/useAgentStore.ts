@@ -112,10 +112,15 @@ export const useAgentStore = create<AgentStore>()(
           return;
         }
 
+        // Check if this is a historical event (replayed on page refresh)
+        // Historical events should NOT change agent state - the backend already sent
+        // the correct current state via agent_state event
+        const isHistorical = (event as any).historical === true;
+
         set((state) => {
           const agent = state.agents[event.agent_id];
 
-          console.log(`[Store] Processing event ${event.event_type} for agent ${event.agent_id}`);
+          console.log(`[Store] Processing event ${event.event_type} for agent ${event.agent_id}${isHistorical ? ' (historical)' : ''}`);
 
           // If agent doesn't exist, create it
           if (!agent) {
@@ -166,6 +171,11 @@ export const useAgentStore = create<AgentStore>()(
           switch (event.event_type) {
             case 'state_change':
               // Handle hook-based state changes from backend
+              // Skip state changes for historical events - backend already sent correct current state
+              if (isHistorical) {
+                console.log(`[Store] Skipping state_change for historical event`);
+                break;
+              }
               const backendState = event.metadata?.state as BackendState;
               if (backendState) {
                 const newState = mapBackendStateToFrontend(backendState);
@@ -213,23 +223,48 @@ export const useAgentStore = create<AgentStore>()(
               break;
 
             case 'waiting_for_input':
+              // Skip state changes for historical events
+              if (isHistorical) {
+                console.log(`[Store] Skipping waiting_for_input state change for historical event`);
+                break;
+              }
               updates.state = 'waiting_for_input';
               updates.needs_attention = true;
               updates.last_message = `[${event.agent_id.slice(-8)}] ${(event.metadata?.prompt || 'Waiting for input...').slice(0, 100)}`;
               break;
             case 'error':
+              // Skip state changes for historical events
+              if (isHistorical) {
+                console.log(`[Store] Skipping error state change for historical event`);
+                break;
+              }
               updates.state = 'error';
               updates.error_message = event.metadata?.error || event.metadata?.message || 'Unknown error';
               break;
             case 'task_completed':
+              // Skip state changes for historical events
+              if (isHistorical) {
+                console.log(`[Store] Skipping task_completed state change for historical event`);
+                break;
+              }
               updates.state = 'ready';
               updates.last_message = 'Ready for next task...';
               break;
             case 'agent_started':
+              // Skip state changes for historical events
+              if (isHistorical) {
+                console.log(`[Store] Skipping agent_started state change for historical event`);
+                break;
+              }
               updates.state = 'ready';
               updates.last_message = 'Ready for task...';
               break;
             case 'agent_stopped':
+              // Skip state changes for historical events
+              if (isHistorical) {
+                console.log(`[Store] Skipping agent_stopped state change for historical event`);
+                break;
+              }
               // Process exited - mark as completed
               updates.state = 'completed';
               updates.completed_at = event.timestamp;
@@ -426,9 +461,8 @@ export const useAgentStore = create<AgentStore>()(
       },
     }),
     {
-      name: 'agentviz-storage',
+      name: 'agentviz-storage-v2',
       partialize: (state) => ({
-        agents: state.agents,
         filters: state.filters,
         userLastSeen: state.userLastSeen,
       }),

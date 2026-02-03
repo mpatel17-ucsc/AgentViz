@@ -295,6 +295,10 @@ def transition_agent_state(agent: dict, event_type: str, metadata: dict) -> tupl
         # When user says "no" to a permission prompt, the agent cancels the request
         # and should go to ready/idle. But the agent may emit token_usage events
         # while responding. Let hooks (Stop/AfterAgent) handle the transition to ready.
+        #
+        # Also ignore background/boot activity before the user has started a task.
+        if not agent.get("task_started"):
+            return (None, old_state)
         if old_state in (AgentState.READY.value, AgentState.COMPLETED.value):
             new_state = AgentState.IN_PROGRESS.value
             agent["needs_attention"] = False
@@ -357,10 +361,12 @@ async def connect(sid, environ):
     # Send current agent states to newly connected client
     for agent_id, agent in agent_store.items():
         await sio.emit('agent_state', agent, to=sid)
-    # Send historical events
+    # Send historical events (marked as historical so frontend doesn't re-apply state changes)
     for agent_id, events in agent_events_store.items():
         for event in events[-100:]:  # Last 100 events per agent
-            await sio.emit('agent_event', event, to=sid)
+            # Mark event as historical so frontend knows not to change state
+            historical_event = {**event, "historical": True}
+            await sio.emit('agent_event', historical_event, to=sid)
     print(f"Sent state for {len(agent_store)} agents to {sid}")
 
 
