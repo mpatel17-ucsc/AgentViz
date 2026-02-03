@@ -112,10 +112,15 @@ export const useAgentStore = create<AgentStore>()(
           return;
         }
 
+        // Check if this is a historical event (replayed on page refresh)
+        // Historical events should NOT change agent state - the backend already sent
+        // the correct current state via agent_state event
+        const isHistorical = (event as any).historical === true;
+
         set((state) => {
           const agent = state.agents[event.agent_id];
 
-          console.log(`[Store] Processing event ${event.event_type} for agent ${event.agent_id}`);
+          console.log(`[Store] Processing event ${event.event_type} for agent ${event.agent_id}${isHistorical ? ' (historical)' : ''}`);
 
           // If agent doesn't exist, create it
           if (!agent) {
@@ -163,22 +168,22 @@ export const useAgentStore = create<AgentStore>()(
             last_event_at: event.timestamp,
           };
 
+          // IMPORTANT: Do NOT change agent state in addEvent()!
+          // State changes should ONLY come from setAgent() via 'agent_state' socket events.
+          // The backend is the source of truth for state - it decides whether to change state
+          // based on task_started and other conditions. If it changes state, it sends an
+          // 'agent_state' event which calls setAgent(). If it ignores the event, no state
+          // change should happen.
+          //
+          // This prevents the frontend from showing incorrect state when the backend
+          // ignores events (e.g., during startup when task_started is false).
+
           switch (event.event_type) {
             case 'state_change':
-              // Handle hook-based state changes from backend
+              // Do NOT change state here - let agent_state event handle it
+              // Only update last_message for display purposes
               const backendState = event.metadata?.state as BackendState;
-              if (backendState) {
-                const newState = mapBackendStateToFrontend(backendState);
-
-                // Don't override completed state with anything except stopped
-                if (agent.state === 'completed' && backendState !== 'stopped') {
-                  console.log(`[Store] Ignoring state_change ${backendState} for completed agent`);
-                  break;
-                }
-
-                updates.state = newState;
-
-                // Update message based on state
+              if (backendState && !isHistorical) {
                 switch (backendState) {
                   case 'starting':
                     updates.last_message = 'Starting session...';
@@ -192,50 +197,34 @@ export const useAgentStore = create<AgentStore>()(
                       ? `Executing: ${tool}`
                       : 'Executing tool...';
                     break;
-                  case 'ready':
-                    updates.last_message = 'Ready for next task...';
-                    break;
-                  case 'idle':
-                    updates.last_message = 'Idle - waiting for input';
-                    break;
                   case 'waiting_for_input':
                     updates.last_message = 'Waiting for approval...';
-                    updates.needs_attention = true;
-                    break;
-                  case 'stopped':
-                    updates.last_message = 'Session ended';
-                    updates.completed_at = event.timestamp;
                     break;
                 }
-
-                console.log(`[Store] State change: ${backendState} -> ${newState} for agent ${event.agent_id}`);
               }
               break;
 
             case 'waiting_for_input':
-              updates.state = 'waiting_for_input';
-              updates.needs_attention = true;
-              updates.last_message = `[${event.agent_id.slice(-8)}] ${(event.metadata?.prompt || 'Waiting for input...').slice(0, 100)}`;
+              // Do NOT change state here - let agent_state event handle it
+              // Only update last_message
+              if (!isHistorical) {
+                updates.last_message = `[${event.agent_id.slice(-8)}] ${(event.metadata?.prompt || 'Waiting for input...').slice(0, 100)}`;
+              }
               break;
             case 'error':
-              updates.state = 'error';
-              updates.error_message = event.metadata?.error || event.metadata?.message || 'Unknown error';
+              // Do NOT change state here - let agent_state event handle it
+              if (!isHistorical) {
+                updates.error_message = event.metadata?.error || event.metadata?.message || 'Unknown error';
+              }
               break;
             case 'task_completed':
-              updates.state = 'ready';
-              updates.last_message = 'Ready for next task...';
+              // Do NOT change state here - let agent_state event handle it
               break;
             case 'agent_started':
-              updates.state = 'ready';
-              updates.last_message = 'Ready for task...';
+              // Do NOT change state here - let agent_state event handle it
               break;
             case 'agent_stopped':
-              // Process exited - mark as completed
-              updates.state = 'completed';
-              updates.completed_at = event.timestamp;
-              updates.last_message = event.metadata?.return_code === 0
-                ? 'Completed successfully'
-                : `Exited with code ${event.metadata?.return_code || 'unknown'}`;
+              // Do NOT change state here - let agent_state event handle it
               break;
             case 'user_prompt':
               if (!agent.task_summary && event.metadata?.prompt && event.metadata.prompt !== '[user input]') {
@@ -426,9 +415,8 @@ export const useAgentStore = create<AgentStore>()(
       },
     }),
     {
-      name: 'agentviz-storage',
+      name: 'agentviz-storage-v2',
       partialize: (state) => ({
-        agents: state.agents,
         filters: state.filters,
         userLastSeen: state.userLastSeen,
       }),

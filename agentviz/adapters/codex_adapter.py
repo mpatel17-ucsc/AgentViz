@@ -380,12 +380,17 @@ if __name__ == "__main__":
                     timestamp = log_record.time_unix_nano
 
                     # API Request events (token usage)
+                    # Only emit if user has started a task (skip startup API calls)
                     if 'api.request' in event_name or attrs.get('conversation.id'):
                         model = attrs.get('model', 'gpt-4')
                         input_tokens = int(attrs.get('token.input', 0) or 0)
                         output_tokens = int(attrs.get('token.output', 0) or 0)
 
-                        if input_tokens > 0 or output_tokens > 0:
+                        # Only emit token_usage if user has actually provided input
+                        # This prevents startup API calls from triggering state changes
+                        user_has_started_task = self._last_user_input_at > 0
+
+                        if (input_tokens > 0 or output_tokens > 0) and user_has_started_task:
                             dedup_key = f"token:{timestamp}"
                             if dedup_key not in self._seen_otel_events:
                                 self._seen_otel_events.add(dedup_key)
@@ -401,8 +406,13 @@ if __name__ == "__main__":
                         tool_name = attrs.get('tool.name', 'unknown')
                         register_agent_activity(self.agent_id)
 
-                        # Mark as working when tool starts
-                        if 'execute' in event_name and self._current_state != "working":
+                        # Only emit state_change to "working" if a user has actually started a task.
+                        # During startup, Codex runs internal tools which we should NOT treat as work.
+                        # _last_user_input_at is set when user presses Enter (provides input).
+                        user_has_started_task = self._last_user_input_at > 0
+
+                        # Mark as working when tool starts (only if user task is active)
+                        if 'execute' in event_name and self._current_state != "working" and user_has_started_task:
                             self._current_state = "working"
                             self._task_in_progress = True
                             await self.emit_event("state_change", {
@@ -411,10 +421,12 @@ if __name__ == "__main__":
                                 "tool": tool_name
                             })
 
-                        await self.emit_event("tool_call", {
-                            "tool_name": tool_name,
-                            "source": "otel"
-                        })
+                        # Only emit tool_call if user has started a task (skip startup tools)
+                        if user_has_started_task:
+                            await self.emit_event("tool_call", {
+                                "tool_name": tool_name,
+                                "source": "otel"
+                            })
 
                     # File operations
                     if any(kw in event_name for kw in ['file', 'write', 'read', 'edit']):
