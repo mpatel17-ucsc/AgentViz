@@ -17,6 +17,7 @@ import { useAgentStore } from '../hooks/useAgentStore';
 import { formatTime, formatRelativeTime } from '../utils/sorting';
 import AgentTypeIcon from './AgentTypeIcon';
 import SubprocessTree from './SubprocessTree';
+import TerminalView from './TerminalView';
 import io from 'socket.io-client';
 
 interface DetailDrawerProps {
@@ -285,6 +286,17 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
           <SubprocessTree subprocesses={agent.subprocesses} compact={false} maxVisible={20} />
         </Box>
       )}
+
+      {/* Live Terminal View */}
+      <Box sx={{ p: 2, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <TerminalIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Terminal Output
+          </Typography>
+        </Box>
+        <TerminalView socket={socket} agentId={agent.id} agentState={agent.state} />
+      </Box>
 
       {/* Event Timeline */}
       <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>

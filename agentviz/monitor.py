@@ -18,6 +18,8 @@ class Monitor:
         self.lock = asyncio.Lock()
         # Track whether we've sent agent_stopped (used by cli.py for fallback)
         self._agent_stopped_sent = False
+        # Reference to the adapter for terminal history requests
+        self._adapter = None
 
         self.adapter_map = {
             "gemini": GeminiAdapter,
@@ -28,6 +30,30 @@ class Monitor:
             "codex-cli": CodexAdapter,
             "openai-codex": CodexAdapter,
         }
+
+        # Register SocketIO event handler for terminal history requests
+        @self.sio.on('request_terminal_history')
+        def on_request_terminal_history(data):
+            """Handle terminal history request from backend."""
+            requested_agent_id = data.get('agent_id')
+            requester_sid = data.get('requester_sid')
+
+            # Only respond if this request is for our agent
+            if requested_agent_id != self.agent_id:
+                return
+
+            # Get terminal history from adapter
+            history = []
+            if self._adapter and hasattr(self._adapter, 'get_terminal_history'):
+                history = self._adapter.get_terminal_history()
+
+            # Send history back to backend (which will forward to the specific client)
+            self.sio.emit('terminal_history_response', {
+                'agent_id': self.agent_id,
+                'requester_sid': requester_sid,
+                'history': history,
+                'timestamp': time.time()
+            })
 
     async def emit_event(self, agent_id, agent_type, event_type, working_dir, metadata):
         event_data = {
@@ -63,6 +89,9 @@ class Monitor:
             working_dir=self.workspace,
             command=self.agent_command
         )
+
+        # Store reference for terminal history requests
+        self._adapter = adapter
 
         try:
             await adapter.run()

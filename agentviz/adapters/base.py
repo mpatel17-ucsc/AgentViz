@@ -10,6 +10,9 @@ import termios
 import tty
 import signal
 import threading
+import base64
+import re
+from collections import deque
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import errno
@@ -58,6 +61,194 @@ def debug_print(msg, **kwargs):
     if AGENTVIZ_DEBUG:
         kwargs.setdefault("file", sys.stderr)
         print(f"[AgentViz Debug] {msg}", **kwargs)
+
+
+# ============================================
+# Terminal Buffer Manager
+# ============================================
+# ANSI escape sequence pattern for stripping when checking for meaningful changes
+ANSI_ESCAPE_PATTERN = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text for comparison purposes."""
+    return ANSI_ESCAPE_PATTERN.sub('', text)
+
+
+def is_meaningful_output(raw_bytes: bytes, decoded_str: str) -> bool:
+    """
+    Determine if terminal output is "meaningful" (not just cursor moves or empty).
+    Returns False for trivial updates that shouldn't reset idle detection.
+    """
+    stripped = strip_ansi(decoded_str).strip()
+    # Empty after stripping ANSI = cursor moves, color changes only
+    if not stripped:
+        return False
+    # Single character updates (cursor blinks, etc.)
+    if len(stripped) <= 1 and stripped in (' ', '\n', '\r', '\t'):
+        return False
+    return True
+
+
+class TerminalBuffer:
+    """
+    Manages terminal output buffering for live streaming to dashboard.
+
+    Features:
+    - Stores last ~500 lines of terminal history
+    - Debounces rapid output (batches small chunks over 300-500ms)
+    - Detects idle periods (no meaningful output for >10 seconds)
+    - Emits base64-encoded output for binary safety
+    """
+
+    def __init__(self, adapter, max_lines: int = 500, debounce_ms: int = 300):
+        self.adapter = adapter
+        self.max_lines = max_lines
+        self.debounce_seconds = debounce_ms / 1000.0
+
+        # History buffer: stores decoded strings (lines)
+        self._history: deque = deque(maxlen=max_lines)
+
+        # Pending output buffer for debouncing
+        self._pending_bytes = bytearray()
+        self._pending_lock = threading.Lock()
+
+        # Timing for debounce and idle detection
+        self._last_meaningful_output_at = time.time()
+        self._last_flush_at = 0.0
+        self._idle_emitted = False
+        self._idle_threshold = 10.0  # seconds
+
+        # Debounce timer handle
+        self._flush_timer = None
+        self._flush_timer_lock = threading.Lock()
+
+        # Event loop reference (set when adapter starts)
+        self._loop = None
+
+    def set_loop(self, loop):
+        """Set the asyncio event loop reference."""
+        self._loop = loop
+
+    def append_output(self, raw_bytes: bytes):
+        """
+        Append raw PTY output to the buffer.
+        Schedules debounced flush to emit batched output.
+        """
+        if not raw_bytes:
+            return
+
+        with self._pending_lock:
+            self._pending_bytes.extend(raw_bytes)
+
+        # Decode for history and meaningful check
+        try:
+            decoded = raw_bytes.decode('utf-8', errors='replace')
+        except Exception:
+            decoded = raw_bytes.decode('latin-1', errors='replace')
+
+        # Check if this is meaningful output
+        if is_meaningful_output(raw_bytes, decoded):
+            self._last_meaningful_output_at = time.time()
+            self._idle_emitted = False
+
+        # Add lines to history
+        self._append_to_history(decoded)
+
+        # Schedule debounced flush
+        self._schedule_flush()
+
+    def _append_to_history(self, decoded: str):
+        """Split decoded output into lines and add to history."""
+        # Handle both \r\n and \n line endings
+        # Also handle carriage returns that overwrite lines
+        lines = decoded.replace('\r\n', '\n').split('\n')
+
+        for i, line in enumerate(lines):
+            if i == 0 and self._history:
+                # Append to last line (continuation)
+                last = self._history[-1]
+                # Handle carriage return (line overwrite)
+                if '\r' in line:
+                    parts = line.split('\r')
+                    # Take the last non-empty part
+                    line = parts[-1] if parts[-1] else (parts[-2] if len(parts) > 1 else '')
+                    self._history[-1] = line
+                else:
+                    self._history[-1] = last + line
+            elif line or i < len(lines) - 1:
+                # Add new line (skip trailing empty from split)
+                self._history.append(line)
+
+    def _schedule_flush(self):
+        """Schedule a debounced flush of pending output."""
+        if not self._loop:
+            return
+
+        with self._flush_timer_lock:
+            # Cancel existing timer
+            if self._flush_timer:
+                self._flush_timer.cancel()
+
+            # Schedule new flush
+            self._flush_timer = self._loop.call_later(
+                self.debounce_seconds,
+                lambda: asyncio.run_coroutine_threadsafe(
+                    self._flush_pending(),
+                    self._loop
+                )
+            )
+
+    async def _flush_pending(self):
+        """Flush pending bytes and emit terminal_output event."""
+        with self._pending_lock:
+            if not self._pending_bytes:
+                return
+
+            # Take pending bytes
+            data = bytes(self._pending_bytes)
+            self._pending_bytes.clear()
+
+        self._last_flush_at = time.time()
+
+        # Base64 encode for safe transmission
+        encoded = base64.b64encode(data).decode('ascii')
+
+        # Emit to dashboard
+        await self.adapter.emit_event("terminal_output", {
+            "content": encoded,
+            "encoding": "base64",
+            "timestamp": time.time()
+        })
+
+    async def check_idle(self) -> bool:
+        """
+        Check if terminal is idle and emit idle event if needed.
+        Returns True if idle event was emitted.
+        """
+        now = time.time()
+        idle_duration = now - self._last_meaningful_output_at
+
+        if idle_duration > self._idle_threshold and not self._idle_emitted:
+            self._idle_emitted = True
+            await self.adapter.emit_event("terminal_idle", {
+                "idle_seconds": idle_duration,
+                "last_output_at": self._last_meaningful_output_at,
+                "timestamp": now
+            })
+            return True
+        return False
+
+    def get_history(self) -> list:
+        """Get current history as list of strings."""
+        return list(self._history)
+
+    def clear(self):
+        """Clear all buffers."""
+        self._history.clear()
+        with self._pending_lock:
+            self._pending_bytes.clear()
+        self._last_meaningful_output_at = time.time()
+        self._idle_emitted = False
 
 
 def get_directory_snapshot(working_dir, recursive=True):
@@ -682,6 +873,9 @@ class BaseAdapter:
         # Possible values: idle, starting, thinking, in_progress, working, ready, waiting_for_input, stopped
         self._current_state = "idle"
 
+        # Terminal buffer for live streaming to dashboard
+        self._terminal_buffer = TerminalBuffer(self, max_lines=500, debounce_ms=300)
+
     def _enter_waiting_for_input_state(self):
         """Transition to waiting_for_input and reset response tracking."""
         self._current_state = "waiting_for_input"
@@ -744,6 +938,9 @@ class BaseAdapter:
 
                 # Add PTY reader
                 loop.add_reader(self.pty_master_fd, self._pty_read_callback)
+
+                # Initialize terminal buffer with event loop
+                self._terminal_buffer.set_loop(loop)
 
                 # Start monitors (file watcher disabled globally)
                 asyncio.create_task(self.monitor_subprocesses())
@@ -877,6 +1074,9 @@ class BaseAdapter:
                 self._terminal_activity_detected = True
                 self._last_stable_state_emitted = False  # Reset stable state on new output
                 os.write(sys.stdout.fileno(), data)
+
+                # Stream terminal output to dashboard via buffer
+                self._terminal_buffer.append_output(data)
 
                 output_str = data.decode('utf-8', errors='ignore')
 
@@ -1238,6 +1438,14 @@ class BaseAdapter:
             metadata=metadata,
         )
 
+    def get_terminal_history(self) -> list:
+        """Get terminal history lines for dashboard replay."""
+        return self._terminal_buffer.get_history()
+
+    async def check_terminal_idle(self):
+        """Check if terminal is idle and emit event if needed."""
+        await self._terminal_buffer.check_idle()
+
     async def monitor_workspace(self):
         """
         Monitor workspace for file changes.
@@ -1577,6 +1785,9 @@ class BaseAdapter:
                             "idle_duration": time_since_activity
                         })
 
+            # Check terminal idle state for dashboard notifications
+            await self.check_terminal_idle()
+
             await asyncio.sleep(0.5)  # Check more frequently (was 1.0s)
 
         debug_print("[IDLE_FALLBACK] Loop ended", file=sys.stderr)
@@ -1661,5 +1872,8 @@ class BaseAdapter:
                         "state": "ready",
                         "source": "otel_idle"
                     })
+
+            # Check terminal idle state for dashboard notifications
+            await self.check_terminal_idle()
 
             await asyncio.sleep(0.3)  # Check more frequently for responsiveness

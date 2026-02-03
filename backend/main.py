@@ -73,6 +73,9 @@ agent_store: Dict[str, dict] = {}
 # Structure: { agent_id: [events...] }
 agent_events_store: Dict[str, List[dict]] = {}
 
+# Structure: { agent_id: monitor_sid } - maps agents to their monitor socket
+agent_monitor_sids: Dict[str, str] = {}
+
 
 
 def get_or_create_agent(agent_id: str, agent_type: str, working_dir: str) -> dict:
@@ -372,6 +375,11 @@ async def connect(sid, environ):
 @sio.event
 async def disconnect(sid):
     print(f"Socket.IO client disconnected: {sid}")
+    # Clean up agent monitor mappings for this socket
+    agents_to_remove = [aid for aid, msid in agent_monitor_sids.items() if msid == sid]
+    for agent_id in agents_to_remove:
+        del agent_monitor_sids[agent_id]
+        print(f"[BACKEND] Cleaned up monitor mapping for agent_id={agent_id}")
 
 
 @sio.event
@@ -391,6 +399,27 @@ async def agent_event(sid, data: dict):
 
     if not agent_id:
         return
+
+    # Track the monitor's socket ID for this agent
+    agent_monitor_sids[agent_id] = sid
+
+    # Handle terminal streaming events - forward directly to all clients
+    if event_type == "terminal_output":
+        await sio.emit('terminal_output', {
+            'agent_id': agent_id,
+            'content': metadata.get('content', ''),
+            'encoding': metadata.get('encoding', 'base64'),
+            'timestamp': metadata.get('timestamp', time.time())
+        })
+        return  # Don't process as regular event
+
+    if event_type == "terminal_idle":
+        await sio.emit('terminal_idle', {
+            'agent_id': agent_id,
+            'idle_seconds': metadata.get('idle_seconds', 0),
+            'timestamp': metadata.get('timestamp', time.time())
+        })
+        return  # Don't process as regular event
 
     # Get or create agent
     agent = get_or_create_agent(agent_id, agent_type, working_dir)
@@ -503,6 +532,60 @@ async def control_start_task(sid, data: dict):
             "timestamp": time.time(),
         })
         print(f"[BACKEND] Agent {agent_id} start task requested, moved to IN_PROGRESS")
+
+
+@sio.event
+async def request_terminal_history(sid, data: dict):
+    """
+    Handle terminal history request from frontend client.
+    Forwards the request to the appropriate monitor.
+    """
+    agent_id = data.get('agent_id')
+    if not agent_id:
+        return
+
+    print(f"[BACKEND] Terminal history requested for agent_id={agent_id} by {sid}")
+
+    # Find the monitor socket for this agent
+    monitor_sid = agent_monitor_sids.get(agent_id)
+    if monitor_sid:
+        # Forward request to the monitor with the requester's SID
+        await sio.emit('request_terminal_history', {
+            'agent_id': agent_id,
+            'requester_sid': sid
+        }, to=monitor_sid)
+    else:
+        # Agent not connected or no monitor - send empty history
+        print(f"[BACKEND] No monitor found for agent_id={agent_id}")
+        await sio.emit('terminal_history', {
+            'agent_id': agent_id,
+            'history': [],
+            'timestamp': time.time()
+        }, to=sid)
+
+
+@sio.event
+async def terminal_history_response(sid, data: dict):
+    """
+    Handle terminal history response from monitor.
+    Forwards the history to the requesting frontend client.
+    """
+    agent_id = data.get('agent_id')
+    requester_sid = data.get('requester_sid')
+    history = data.get('history', [])
+
+    if not requester_sid:
+        print(f"[BACKEND] No requester_sid in terminal_history_response")
+        return
+
+    print(f"[BACKEND] Forwarding terminal history ({len(history)} lines) to {requester_sid}")
+
+    # Send history to the requesting client
+    await sio.emit('terminal_history', {
+        'agent_id': agent_id,
+        'history': history,
+        'timestamp': time.time()
+    }, to=requester_sid)
 
 
 # ============================================
