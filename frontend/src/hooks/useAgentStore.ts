@@ -142,6 +142,8 @@ export const useAgentStore = create<AgentStore>()(
               subprocesses: {},
               first_seen: event.timestamp,
               user_last_seen: null,
+              wrapper: 'none',
+              prompt_options: [],
             };
 
             return {

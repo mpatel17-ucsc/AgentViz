@@ -77,8 +77,8 @@ class CodexAdapter(BaseAdapter):
         self._disable_file_watcher = True
         self._enable_subprocess_snapshot = False
 
-        # IMPORTANT: Codex notify only fires on agent-turn-complete
-        # Use hooks as primary; disable idle timeout fallback to avoid drift
+        # IMPORTANT: Codex notify only fires on agent-turn-complete.
+        # Keep hooks primary and DO NOT use timeout-based fallback transitions.
         self._use_hooks_for_state = True
         self._enable_idle_timeout_fallback = False
 

@@ -98,6 +98,8 @@ def get_or_create_agent(agent_id: str, agent_type: str, working_dir: str) -> dic
             "first_seen": now,
             "user_last_seen": None,
             "task_started": False,
+            "wrapper": "none",
+            "prompt_options": [],
         }
         agent_events_store[agent_id] = []
     return agent_store[agent_id]
@@ -398,6 +400,25 @@ async def agent_event(sid, data: dict):
     # Update last event timestamp
     agent["last_event_at"] = time.time()
 
+    # Keep wrapper metadata for controllable UI
+    if metadata.get("wrapper"):
+        agent["wrapper"] = metadata.get("wrapper")
+
+    # prompt_options updates are informational only (no state transition logic)
+    if event_type == "prompt_options":
+        labels = metadata.get("options", []) or []
+        inputs = metadata.get("inputs", []) or []
+        agent["prompt_options"] = [
+            {"label": labels[i], "input": inputs[i] if i < len(inputs) else str(i)}
+            for i in range(len(labels))
+        ]
+        await sio.emit('agent_state', agent)
+
+    # Clear options when waiting dialog is resolved
+    if event_type == "state_change" and metadata.get("state") in ("in_progress", "working", "thinking", "ready", "stopped"):
+        if agent.get("prompt_options"):
+            agent["prompt_options"] = []
+
     # Capture task summary from user prompts
     if event_type == "user_prompt" and not agent["task_summary"]:
         prompt = metadata.get("prompt", "")
@@ -503,6 +524,42 @@ async def control_start_task(sid, data: dict):
             "timestamp": time.time(),
         })
         print(f"[BACKEND] Agent {agent_id} start task requested, moved to IN_PROGRESS")
+
+
+@sio.event
+async def agent_control(sid, data: dict):
+    """Relay dashboard control actions to monitors (input only; no state forcing)."""
+    agent_id = data.get('agent_id')
+    action = data.get('action', '')
+    if not agent_id:
+        return
+    # Keep state-transition semantics aligned with baseline event flow:
+    # do not change state here, only mark task intent so subsequent user_prompt/work
+    # events follow the same transitions as non-controllable terminal input.
+    agent = agent_store.get(agent_id)
+    if agent and action in ("send_input", "select_option", "simulate_enter"):
+        agent["task_started"] = True
+        if agent.get("completed_at") is not None:
+            agent["completed_at"] = None
+        agent["needs_attention"] = False
+    print(f"[BACKEND] Relaying agent_control action={action} to agent={agent_id}")
+    await sio.emit('agent_control', data)
+
+
+@sio.event
+async def control_input(sid, data: dict):
+    """Compatibility path: convert control_input to agent_control/send_input."""
+    agent_id = data.get('agent_id')
+    input_text = data.get('input', '')
+    if not agent_id or not input_text:
+        return
+    await sio.emit('agent_control', {
+        "agent_id": agent_id,
+        "action": "send_input",
+        "text": input_text,
+        "append_enter": True,
+        "enter_sequence": "cr",
+    })
 
 
 # ============================================

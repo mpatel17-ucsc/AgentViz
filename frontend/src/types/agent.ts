@@ -55,11 +55,18 @@ export interface Subprocess {
   exit_code: number | null;
 }
 
+// Prompt option (from AgentAPI message parsing)
+export interface PromptOption {
+  label: string;
+  input: string;
+}
+
 // Full agent model
 export interface Agent {
   id: string;
   type: string; // 'claude-code', 'gemini-cli', 'codex'
   state: AgentState;
+  wrapper?: 'none' | 'controllable';
   workspace: string;
   branch: string | null;
   repo: string | null;
@@ -74,6 +81,7 @@ export interface Agent {
   subprocesses: Record<number, Subprocess>;
   first_seen: number;
   user_last_seen: number | null;
+  prompt_options?: PromptOption[];
 }
 
 // Agent event from socket

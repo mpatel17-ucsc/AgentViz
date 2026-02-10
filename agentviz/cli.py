@@ -41,7 +41,9 @@ def run(args):
         print("Usage: agentviz run -w <workspace> <agent_type> <command...>", file=sys.stderr)
         sys.exit(1)
 
-    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace)
+    wrapper = getattr(args, 'wrapper', 'none') or 'none'
+
+    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace, wrapper=wrapper)
     interrupted = False
     error_occurred = False
 
@@ -144,6 +146,8 @@ def main():
     # Run Command
     parser_run = subparsers.add_parser("run", help="Run a coding agent and monitor it.")
     parser_run.add_argument("-w", required=True, help="Workspace directory for the agent.")
+    parser_run.add_argument("--wrapper", choices=["none", "controllable"], default="none",
+                            help="Control mode. 'controllable' enables sending input to the agent from the dashboard.")
     parser_run.add_argument("agent", help="The agent to run (e.g., 'gemini-cli', 'claude-code').")
     parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="The command to execute the agent.")
     parser_run.set_defaults(func=run)

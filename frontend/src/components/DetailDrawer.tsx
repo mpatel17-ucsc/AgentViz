@@ -7,12 +7,14 @@ import {
   Button,
   Chip,
   Divider,
+  TextField,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import StopIcon from '@mui/icons-material/Stop';
 import ReplayIcon from '@mui/icons-material/Replay';
 import TerminalIcon from '@mui/icons-material/Terminal';
-import { Agent, AgentEvent, getColumnConfig } from '../types/agent';
+import SendIcon from '@mui/icons-material/Send';
+import { Agent, AgentEvent, getColumnConfig, PromptOption } from '../types/agent';
 import { useAgentStore } from '../hooks/useAgentStore';
 import { formatTime, formatRelativeTime } from '../utils/sorting';
 import AgentTypeIcon from './AgentTypeIcon';
@@ -156,11 +158,18 @@ const EventItem: React.FC<{ event: AgentEvent }> = ({ event }) => {
   );
 };
 
+// Events to hide from timeline (high-frequency or internal)
+const HIDDEN_EVENT_TYPES = new Set(['prompt_options', 'agent_message', 'terminal_update']);
+
 export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) => {
   const { agents, selectedAgentId, drawerOpen, setDrawerOpen, markAgentSeen } = useAgentStore();
 
   const agent = selectedAgentId ? agents[selectedAgentId] : null;
-  const agentEvents = events.filter((e) => e.agent_id === selectedAgentId);
+  const agentEvents = events.filter(
+    (e) => e.agent_id === selectedAgentId && !HIDDEN_EVENT_TYPES.has(e.event_type)
+  );
+
+  const [inputValue, setInputValue] = React.useState('');
 
   // Mark agent as seen when drawer opens
   React.useEffect(() => {
@@ -169,6 +178,11 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
       socket.emit('mark_agent_seen', { agent_id: selectedAgentId });
     }
   }, [drawerOpen, selectedAgentId, markAgentSeen, socket]);
+
+  // Clear input when agent changes
+  React.useEffect(() => {
+    setInputValue('');
+  }, [selectedAgentId]);
 
   const handleClose = () => {
     setDrawerOpen(false);
@@ -186,9 +200,46 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
     }
   };
 
+  const handleSendInput = () => {
+    if (!selectedAgentId || !inputValue.trim()) return;
+    const text = inputValue.trim();
+    socket.emit('agent_control', {
+      agent_id: selectedAgentId,
+      action: 'send_input',
+      text,
+      append_enter: false,
+      enter_sequence: 'cr',
+    });
+    // Send Enter as an independent control action so terminal UIs treat it as
+    // a real keypress rather than part of pasted content.
+    setTimeout(() => {
+      socket.emit('agent_control', {
+        agent_id: selectedAgentId,
+        action: 'simulate_enter',
+        enter_sequence: 'cr',
+      });
+    }, 40);
+    setInputValue('');
+  };
+
+  const handleSelectOption = (opt: PromptOption, index: number) => {
+    if (!selectedAgentId) return;
+    socket.emit('agent_control', {
+      agent_id: selectedAgentId,
+      action: 'select_option',
+      index,
+      selected: { input: opt.input },
+      input: opt.input,
+    });
+  };
+
   if (!agent) return null;
 
   const config = getColumnConfig(agent.state);
+  const isControllable = agent.wrapper === 'controllable';
+  const promptOptions: PromptOption[] = agent.prompt_options || [];
+  const showInput = isControllable && (agent.state === 'ready' || agent.state === 'waiting_for_input');
+  const showOptions = isControllable && agent.state === 'waiting_for_input' && promptOptions.length > 0;
 
   return (
     <Drawer
@@ -232,6 +283,15 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
               fontSize: '10px',
             }}
           />
+          {isControllable && (
+            <Chip
+              label="CONTROLLABLE"
+              size="small"
+              color="primary"
+              variant="outlined"
+              sx={{ fontSize: '9px', height: 20 }}
+            />
+          )}
           {agent.needs_attention && (
             <Chip label="Needs Attention" size="small" color="warning" sx={{ fontSize: '10px' }} />
           )}
@@ -275,6 +335,86 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
           )}
         </Box>
       </Box>
+
+      {/* AgentAPI: Prompt Options (when waiting_for_input with detected options) */}
+      {showOptions && (
+        <Box sx={{ p: 2, borderBottom: '1px solid rgba(255,255,255,0.1)', bgcolor: 'rgba(245, 158, 11, 0.05)' }}>
+          <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: '#f59e0b' }}>
+            Select Option
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+            {promptOptions.map((opt, i) => (
+              <Button
+                key={`${opt.label}-${i}`}
+                variant="outlined"
+                size="small"
+                onClick={() => handleSelectOption(opt, i)}
+                sx={{
+                  fontSize: '11px',
+                  textTransform: 'none',
+                  borderColor: 'rgba(245, 158, 11, 0.4)',
+                  color: '#f59e0b',
+                  '&:hover': {
+                    borderColor: '#f59e0b',
+                    bgcolor: 'rgba(245, 158, 11, 0.1)',
+                  },
+                }}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </Box>
+        </Box>
+      )}
+
+      {/* AgentAPI: Input field (when ready or waiting_for_input) */}
+      {showInput && (
+        <Box sx={{ p: 2, borderBottom: '1px solid rgba(255,255,255,0.1)', bgcolor: 'rgba(59, 130, 246, 0.03)' }}>
+          <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SendIcon fontSize="small" />
+            {agent.state === 'ready' ? 'Send New Prompt' : 'Send Input'}
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField
+              fullWidth
+              size="small"
+              multiline
+              maxRows={4}
+              placeholder={agent.state === 'ready' ? 'Type a task or prompt...' : 'Type your response...'}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendInput();
+                }
+              }}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  bgcolor: '#1a1a1a',
+                  fontSize: '13px',
+                  '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' },
+                  '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' },
+                  '&.Mui-focused fieldset': { borderColor: '#3b82f6' },
+                },
+                '& .MuiInputBase-input': { color: '#e0e0e0' },
+              }}
+            />
+            <Button
+              variant="contained"
+              size="small"
+              onClick={handleSendInput}
+              disabled={!inputValue.trim()}
+              sx={{ minWidth: 60 }}
+            >
+              Send
+            </Button>
+          </Box>
+          <Typography variant="caption" sx={{ color: 'text.disabled', mt: 0.5, display: 'block' }}>
+            Enter to send, Shift+Enter for newline
+          </Typography>
+        </Box>
+      )}
 
       {/* Subprocess Tree */}
       {Object.keys(agent.subprocesses).length > 0 && (

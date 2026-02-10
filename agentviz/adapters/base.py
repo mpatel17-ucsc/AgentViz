@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import time
 import sys
 import psutil
@@ -16,6 +17,7 @@ import errno
 import subprocess  # for git diff
 import subprocess as sp
 import hashlib
+import re
 
 # Set to True to enable debug output (will break TUI apps like Claude Code)
 AGENTVIZ_DEBUG = os.environ.get("AGENTVIZ_DEBUG", "").lower() in ("1", "true", "yes")
@@ -681,6 +683,10 @@ class BaseAdapter:
         # Current internal state (used by idle timeout fallback)
         # Possible values: idle, starting, thinking, in_progress, working, ready, waiting_for_input, stopped
         self._current_state = "idle"
+        # Controllable wrapper helpers (UI input + waiting options)
+        self.terminal_buffer = collections.deque(maxlen=200)
+        self._terminal_line_buffer = ""
+        self.prompt_options = []
 
     def _enter_waiting_for_input_state(self):
         """Transition to waiting_for_input and reset response tracking."""
@@ -688,8 +694,72 @@ class BaseAdapter:
         self._waiting_for_input_since = time.time()
         self._waiting_for_input_response_received = False
 
+    def _is_controllable(self):
+        return getattr(self.monitor, "wrapper", "none") != "none"
+
+    def _parse_prompt_options_from_text(self, text):
+        if not text:
+            return []
+        clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text)
+        lower = clean.lower()
+
+        # Common y/n style prompts
+        if "(y/n)" in lower or "[y/n]" in lower or "yes/no" in lower:
+            return [{"label": "Yes", "input": "y"}, {"label": "No", "input": "n"}]
+
+        # Slash-separated options
+        if "/" in clean:
+            parts = [p.strip(" .,\t") for p in re.split(r"[\/|]", clean) if p.strip()]
+            opts = []
+            for part in parts:
+                lp = part.lower()
+                if lp.startswith("yes"):
+                    opts.append({"label": part, "input": "y"})
+                elif lp.startswith("no") or "deny" in lp or "reject" in lp or "cancel" in lp:
+                    opts.append({"label": part, "input": "n"})
+                elif "allow once" in lp:
+                    opts.append({"label": part, "input": "allow once"})
+                elif "allow for this session" in lp:
+                    opts.append({"label": part, "input": "allow for this session"})
+            if len(opts) >= 2:
+                dedup, seen = [], set()
+                for opt in opts:
+                    k = (opt["label"], opt["input"])
+                    if k not in seen:
+                        seen.add(k)
+                        dedup.append(opt)
+                return dedup
+
+        # Bracketed shortcuts e.g. [Y] [N]
+        matches = re.findall(r'\[([A-Za-z]+)\]\s*([^\[\]/|]+)?', clean)
+        if matches:
+            opts = []
+            for key, _ in matches:
+                key_l = key.strip().lower()
+                if key_l in ("y", "yes"):
+                    opts.append({"label": "Yes", "input": "y"})
+                elif key_l in ("n", "no"):
+                    opts.append({"label": "No", "input": "n"})
+                elif key_l in ("enter", "return"):
+                    opts.append({"label": "Enter", "input": ""})
+                elif key_l in ("esc", "escape"):
+                    opts.append({"label": "Esc", "input": "\u001b"})
+            if opts:
+                dedup, seen = [], set()
+                for opt in opts:
+                    k = (opt["label"], opt["input"])
+                    if k not in seen:
+                        seen.add(k)
+                        dedup.append(opt)
+                return dedup
+
+        return []
+
     async def run(self):
-        await self.emit_event("agent_started", {"command": " ".join(self.command)})
+        await self.emit_event("agent_started", {
+            "command": " ".join(self.command),
+            "wrapper": getattr(self.monitor, "wrapper", "none"),
+        })
 
         cmd = list(self.command)
 
@@ -880,6 +950,18 @@ class BaseAdapter:
 
                 output_str = data.decode('utf-8', errors='ignore')
 
+                # Stream terminal lines for dashboard/debug parsing when controllable.
+                if self._is_controllable():
+                    self._terminal_line_buffer += output_str
+                    parts = self._terminal_line_buffer.split("\n")
+                    complete_lines = [ln.rstrip("\r") for ln in parts[:-1] if ln is not None]
+                    self._terminal_line_buffer = parts[-1]
+                    if complete_lines:
+                        self.terminal_buffer.extend(complete_lines)
+                        asyncio.create_task(self.emit_event("terminal_update", {
+                            "lines": complete_lines[-80:]
+                        }))
+
                 # Update screen buffer for stability detection
                 self._screen_buffer += output_str
                 if len(self._screen_buffer) > self._screen_buffer_max:
@@ -933,6 +1015,16 @@ class BaseAdapter:
                         debug_print(f" Detected NEW user approval request in output", file=sys.stderr)
                         # Keep internal state in sync so idle fallback doesn't misclassify this as active work.
                         self._enter_waiting_for_input_state()
+                        if self._is_controllable():
+                            prompt_text = "\n".join(list(self.terminal_buffer)[-40:]) if self.terminal_buffer else output_str
+                            options = self._parse_prompt_options_from_text(prompt_text)
+                            if options:
+                                self.prompt_options = options
+                                asyncio.create_task(self.emit_event("prompt_options", {
+                                    "options": [o["label"] for o in options],
+                                    "inputs": [o["input"] for o in options],
+                                    "source": "terminal_parse",
+                                }))
                         asyncio.create_task(self.emit_event("waiting_for_input", {
                             "prompt": output_str.strip()[:300]
                         }))

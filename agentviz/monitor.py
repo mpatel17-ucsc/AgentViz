@@ -1,5 +1,7 @@
 import asyncio
+import os
 import sys
+import termios
 import time
 import socketio
 
@@ -9,11 +11,12 @@ from .adapters.claude_adapter import ClaudeAdapter
 from .adapters.codex_adapter import CodexAdapter
 
 class Monitor:
-    def __init__(self, agent_id, agent_type, agent_command, workspace):
+    def __init__(self, agent_id, agent_type, agent_command, workspace, wrapper="none"):
         self.agent_id = agent_id
         self.agent_type = agent_type
         self.agent_command = agent_command
         self.workspace = workspace
+        self.wrapper = wrapper
         self.sio = socketio.Client()
         self.lock = asyncio.Lock()
         # Track whether we've sent agent_stopped (used by cli.py for fallback)
@@ -63,6 +66,88 @@ class Monitor:
             working_dir=self.workspace,
             command=self.agent_command
         )
+
+        # Listen for control events from the dashboard (used by agentapi wrapper).
+        # socketio.Client callbacks run in a background thread — must schedule
+        # coroutines via call_soon_threadsafe.
+        loop = asyncio.get_running_loop()
+
+        def on_agent_control(data):
+            try:
+                if data.get("agent_id") != self.agent_id:
+                    return
+                action = data.get("action")
+                print(
+                    f"[AgentViz Debug] agent_control received action={action} "
+                    f"append_enter={data.get('append_enter')} "
+                    f"enter_sequence={data.get('enter_sequence')}",
+                    file=sys.stderr,
+                )
+                if hasattr(adapter, 'handle_agent_control'):
+                    loop.call_soon_threadsafe(
+                        asyncio.ensure_future,
+                        adapter.handle_agent_control(action, data),
+                    )
+                else:
+                    # Control-only fallback: write to PTY directly.
+                    # This preserves original state-transition behavior because it
+                    # does not emit/force any state events.
+                    pty_fd = getattr(adapter, "pty_master_fd", None)
+                    if pty_fd is None:
+                        return
+
+                    def _enter_bytes(seq):
+                        seq = str(seq or "cr").lower()
+                        if seq == "lf":
+                            return b"\n"
+                        if seq == "crlf":
+                            return b"\r\n"
+                        return b"\r"
+
+                    if action == "send_input":
+                        text = data.get("text", "")
+                        if text:
+                            os.write(pty_fd, str(text).encode("utf-8"))
+                            if data.get("append_enter", True):
+                                os.write(pty_fd, _enter_bytes(data.get("enter_sequence", "cr")))
+                    elif action == "select_option":
+                        selected = data.get("selected") or {}
+                        input_val = selected.get("input") or data.get("input") or str(data.get("index", ""))
+                        os.write(pty_fd, str(input_val).encode("utf-8") + _enter_bytes(data.get("enter_sequence", "cr")))
+                    elif action == "simulate_enter":
+                        os.write(pty_fd, _enter_bytes(data.get("enter_sequence", "cr")))
+
+                    try:
+                        termios.tcdrain(pty_fd)
+                    except Exception:
+                        pass
+
+                # Mirror local-enter semantics for remote control:
+                # emit user_prompt on "submitted" input actions so backend state
+                # transitions follow the same event path as non-controllable mode.
+                should_emit_user_prompt = (
+                    action == "simulate_enter" or
+                    action == "select_option" or
+                    (action == "send_input" and data.get("append_enter", True))
+                )
+                if should_emit_user_prompt:
+                    prompt_text = "[user input]"
+                    if action in ("simulate_enter", "select_option"):
+                        prompt_text = "[user response to prompt]"
+                    loop.call_soon_threadsafe(
+                        asyncio.ensure_future,
+                        self.emit_event(
+                            agent_id=self.agent_id,
+                            agent_type=self.agent_type,
+                            event_type="user_prompt",
+                            working_dir=self.workspace,
+                            metadata={"prompt": prompt_text, "source": "dashboard_control"},
+                        ),
+                    )
+            except Exception as e:
+                print(f"[AgentViz Debug] Failed to handle agent_control: {e}", file=sys.stderr)
+
+        self.sio.on("agent_control", on_agent_control)
 
         try:
             await adapter.run()
