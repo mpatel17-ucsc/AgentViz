@@ -7,13 +7,15 @@ from .adapters.base import BaseAdapter
 from .adapters.gemini_adapter import GeminiAdapter
 from .adapters.claude_adapter import ClaudeAdapter
 from .adapters.codex_adapter import CodexAdapter
+from .tmux_runner import TmuxRunner
 
 class Monitor:
-    def __init__(self, agent_id, agent_type, agent_command, workspace):
+    def __init__(self, agent_id, agent_type, agent_command, workspace, tmux_mode=False):
         self.agent_id = agent_id
         self.agent_type = agent_type
         self.agent_command = agent_command
         self.workspace = workspace
+        self.tmux_mode = tmux_mode
         self.sio = socketio.Client()
         self.lock = asyncio.Lock()
         # Track whether we've sent agent_stopped (used by cli.py for fallback)
@@ -51,6 +53,58 @@ class Monitor:
             print("Error: Could not connect to AgentViz server at http://localhost:8787.", file=sys.stderr)
             sys.exit(1)
 
+        # ---- tmux-mode: skip adapter, use TmuxRunner instead ----
+        if self.tmux_mode:
+            runner = TmuxRunner(
+                monitor=self,
+                agent_id=self.agent_id,
+                agent_type=self.agent_type,
+                workspace=self.workspace,
+                command=self.agent_command,
+            )
+            try:
+                await runner.run()
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                if not self._agent_stopped_sent:
+                    try:
+                        await self.emit_event(
+                            agent_id=self.agent_id,
+                            agent_type=self.agent_type,
+                            event_type="agent_stopped",
+                            working_dir=self.workspace,
+                            metadata={"return_code": -2, "reason": "interrupted"}
+                        )
+                        await self.emit_event(
+                            agent_id=self.agent_id,
+                            agent_type=self.agent_type,
+                            event_type="state_change",
+                            working_dir=self.workspace,
+                            metadata={"state": "stopped", "source": "user_interrupt", "return_code": -2}
+                        )
+                        self._agent_stopped_sent = True
+                        await asyncio.sleep(0.1)
+                    except Exception:
+                        pass
+                raise
+            except Exception as e:
+                print(f"Error running tmux runner: {e}", file=sys.stderr)
+                try:
+                    await self.emit_event(
+                        agent_id=self.agent_id,
+                        agent_type=self.agent_type,
+                        event_type="agent_stopped",
+                        working_dir=self.workspace,
+                        metadata={"return_code": 1, "reason": "error", "error": str(e)}
+                    )
+                    self._agent_stopped_sent = True
+                except Exception:
+                    pass
+            finally:
+                if self.sio.connected:
+                    self.sio.disconnect()
+            return
+
+        # ---- Normal adapter path ----
         adapter_class = self.adapter_map.get(self.agent_type)
         if not adapter_class:
             print(f"Warning: No specific adapter found for agent type '{self.agent_type}'. Using generic adapter.", file=sys.stderr)

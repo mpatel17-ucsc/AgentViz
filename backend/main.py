@@ -98,6 +98,7 @@ def get_or_create_agent(agent_id: str, agent_type: str, working_dir: str) -> dic
             "first_seen": now,
             "user_last_seen": None,
             "task_started": False,
+            "ttyd_url": None,
         }
         agent_events_store[agent_id] = []
     return agent_store[agent_id]
@@ -394,6 +395,18 @@ async def agent_event(sid, data: dict):
 
     # Get or create agent
     agent = get_or_create_agent(agent_id, agent_type, working_dir)
+
+    # Handle tmux_session_info: set ttyd_url, broadcast state, store event, skip state transition
+    if event_type == "tmux_session_info":
+        ttyd_port = metadata.get("ttyd_port")
+        if ttyd_port:
+            agent["ttyd_url"] = f"http://localhost:{ttyd_port}"
+        agent["last_event_at"] = time.time()
+        agent_events_store[agent_id].append(data)
+        await sio.emit('agent_event', data)
+        await sio.emit('agent_state', agent)
+        print(f"[BACKEND] Agent {agent_id} ttyd_url set to {agent['ttyd_url']}")
+        return
 
     # Update last event timestamp
     agent["last_event_at"] = time.time()

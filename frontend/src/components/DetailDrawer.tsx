@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Drawer,
   Box,
@@ -7,11 +7,15 @@ import {
   Button,
   Chip,
   Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import StopIcon from '@mui/icons-material/Stop';
 import ReplayIcon from '@mui/icons-material/Replay';
 import TerminalIcon from '@mui/icons-material/Terminal';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { Agent, AgentEvent, getColumnConfig } from '../types/agent';
 import { useAgentStore } from '../hooks/useAgentStore';
 import { formatTime, formatRelativeTime } from '../utils/sorting';
@@ -158,6 +162,7 @@ const EventItem: React.FC<{ event: AgentEvent }> = ({ event }) => {
 
 export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) => {
   const { agents, selectedAgentId, drawerOpen, setDrawerOpen, markAgentSeen } = useAgentStore();
+  const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
 
   const agent = selectedAgentId ? agents[selectedAgentId] : null;
   const agentEvents = events.filter((e) => e.agent_id === selectedAgentId);
@@ -191,6 +196,7 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
   const config = getColumnConfig(agent.state);
 
   return (
+    <>
     <Drawer
       anchor="right"
       open={drawerOpen}
@@ -251,6 +257,17 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
 
         {/* Control Buttons */}
         <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
+          {agent.ttyd_url && (
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<TerminalIcon />}
+              onClick={() => setTerminalDialogOpen(true)}
+              color="info"
+            >
+              Open Terminal
+            </Button>
+          )}
           {agent.state === 'error' && (
             <Button
               variant="outlined"
@@ -324,6 +341,62 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         </Typography>
       </Box>
     </Drawer>
+
+    {/* Terminal Dialog */}
+    {agent.ttyd_url && (
+      <Dialog
+        open={terminalDialogOpen}
+        onClose={() => setTerminalDialogOpen(false)}
+        maxWidth={false}
+        PaperProps={{
+          sx: {
+            width: '80vw',
+            height: '70vh',
+            bgcolor: '#1a1a1a',
+            backgroundImage: 'none',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            py: 1,
+            bgcolor: '#111',
+            borderBottom: '1px solid rgba(255,255,255,0.1)',
+          }}
+        >
+          <TerminalIcon sx={{ fontSize: 20 }} />
+          <Typography variant="subtitle1" sx={{ flex: 1 }}>
+            Terminal - {agent.id}
+          </Typography>
+          <IconButton
+            size="small"
+            onClick={() => window.open(agent.ttyd_url!, '_blank')}
+            title="Open in new tab"
+          >
+            <OpenInNewIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+          <IconButton size="small" onClick={() => setTerminalDialogOpen(false)}>
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0, overflow: 'hidden' }}>
+          <iframe
+            src={agent.ttyd_url}
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              backgroundColor: '#000',
+            }}
+            title={`Terminal for ${agent.id}`}
+          />
+        </DialogContent>
+      </Dialog>
+    )}
+    </>
   );
 };
 

@@ -1,13 +1,12 @@
 import asyncio
 import os
-import socket
 import json
 import tempfile
 import shutil
 from pathlib import Path
-from contextlib import closing
 
 from .base import BaseAdapter, AGENTVIZ_DEBUG, debug_print, register_agent_activity, is_path_within_dir
+from ..utils import find_free_port
 
 # Import OpenTelemetry protobuf definitions
 try:
@@ -28,13 +27,6 @@ except ImportError:
     debug_print("[OTEL] Warning: fastapi/uvicorn not installed. Run: pip install fastapi uvicorn")
     FASTAPI_AVAILABLE = False
 
-
-def find_free_port():
-    """Find a free port for the OTLP receiver"""
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(('', 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
 
 
 class ClaudeAdapter(BaseAdapter):
