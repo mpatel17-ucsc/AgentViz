@@ -5,6 +5,7 @@ import json
 import tempfile
 import shutil
 import toml
+import re
 from pathlib import Path
 from contextlib import closing
 
@@ -101,6 +102,122 @@ class CodexAdapter(BaseAdapter):
             "proceed?",
             "confirm",
         ]
+
+    def _parse_prompt_options_from_text(self, text):
+        """Codex-focused TUI option extraction from visible terminal text."""
+        if not text:
+            return []
+
+        clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text)
+        lines = [ln.strip() for ln in clean.splitlines() if ln.strip()]
+        tail = lines[-50:]
+        joined = "\n".join(tail)
+        lower = joined.lower()
+
+        # Only parse when we are in a Codex approval/permission context.
+        approval_markers = (
+            "would you like to run",
+            "run the following command",
+            "approve",
+            "allow this command",
+            "do you want to proceed",
+            "continue? (y/n)",
+            "proceed? (y/n)",
+        )
+        found_marker = next((m for m in approval_markers if m in lower), None)
+        if not found_marker:
+            debug_print(f"[CODEX_PARSE] No approval context found in {len(tail)} lines")
+            return []
+        debug_print(f"[CODEX_PARSE] Approval context found: '{found_marker}'")
+
+        # Prefer the most recent block starting from the last approval marker.
+        start_idx = 0
+        for i, line in enumerate(tail):
+            ll = line.lower()
+            if any(marker in ll for marker in approval_markers):
+                start_idx = i
+        prompt_block = tail[start_idx:]
+        joined = "\n".join(prompt_block)
+        lower = joined.lower()
+
+        # 1) Numbered choices are common in Codex approval boxes.
+        # Require hotkey hints in the label to avoid matching regular numbered content.
+        numbered = []
+        for line in prompt_block:
+            m = re.match(r'^\s*(\d+)[\.\)]\s+(.+)$', line)
+            if not m:
+                continue
+            idx = m.group(1)
+            label = m.group(2).strip()
+            label_l = label.lower()
+            # Require an explicit key hint or approval-specific phrase.
+            if label and (
+                re.search(r'\((y|n|p|esc)\)', label_l)
+                or "allow once" in label_l
+                or "allow for this session" in label_l
+                or "don't ask again" in label_l
+                or "no, and tell codex" in label_l
+                or "never allow" in label_l
+            ):
+                numbered.append({"label": f"{idx}. {label}", "input": idx})
+        if len(numbered) >= 2:
+            debug_print(f"[CODEX_PARSE] Extracted {len(numbered)} numbered options")
+            return numbered
+
+        # 2) Bracketed hotkeys: [Y]/[N]/[Enter]/[Esc]
+        bracketed = []
+        for key, label in re.findall(r'\[([A-Za-z]+)\]\s*([^\[\]/|]+)?', joined):
+            key_l = key.strip().lower()
+            label_text = (label or key).strip()
+            if key_l in ("y", "yes"):
+                bracketed.append({"label": "Yes", "input": "y"})
+            elif key_l in ("n", "no"):
+                bracketed.append({"label": "No", "input": "n"})
+            elif key_l in ("enter", "return"):
+                bracketed.append({"label": "Enter", "input": ""})
+            elif key_l in ("esc", "escape"):
+                bracketed.append({"label": "Esc", "input": "\u001b"})
+            elif label_text:
+                bracketed.append({"label": label_text, "input": key})
+        if bracketed:
+            dedup, seen = [], set()
+            for opt in bracketed:
+                k = (opt["label"], opt["input"])
+                if k not in seen:
+                    seen.add(k)
+                    dedup.append(opt)
+            return dedup
+
+        # 3) Slash-separated menus in approval rows.
+        if "/" in joined or "|" in joined:
+            parts = [p.strip(" .,\t") for p in re.split(r"[\/|]", joined) if p.strip()]
+            options = []
+            for part in parts:
+                lp = part.lower()
+                if lp.startswith("yes"):
+                    options.append({"label": part, "input": "y"})
+                elif lp.startswith("no") or "deny" in lp or "reject" in lp or "cancel" in lp:
+                    options.append({"label": part, "input": "n"})
+                elif "allow once" in lp:
+                    options.append({"label": part, "input": "allow once"})
+                elif "allow for this session" in lp:
+                    options.append({"label": part, "input": "allow for this session"})
+                elif "never allow" in lp:
+                    options.append({"label": part, "input": "never allow"})
+            if len(options) >= 2:
+                dedup, seen = [], set()
+                for opt in options:
+                    k = (opt["label"], opt["input"])
+                    if k not in seen:
+                        seen.add(k)
+                        dedup.append(opt)
+                return dedup
+
+        # 4) Explicit y/n prompt text.
+        if "(y/n)" in lower or "[y/n]" in lower or "yes/no" in lower:
+            return [{"label": "Yes", "input": "y"}, {"label": "No", "input": "n"}]
+
+        return []
 
     def _get_notify_script(self):
         """Generate the notify script that writes state to our state file"""

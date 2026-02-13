@@ -55,6 +55,9 @@ export const useAgentStore = create<AgentStore>()(
         }
 
         console.log(`[Store] Setting agent ${agent.id} state to ${agent.state}`);
+        if ((agent as any).prompt_options?.length > 0) {
+          console.log(`[Store] Agent ${agent.id} has ${(agent as any).prompt_options.length} prompt_options`);
+        }
 
         set((state) => ({
           agents: {

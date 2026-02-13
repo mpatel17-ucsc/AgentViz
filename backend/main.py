@@ -412,11 +412,13 @@ async def agent_event(sid, data: dict):
             {"label": labels[i], "input": inputs[i] if i < len(inputs) else str(i)}
             for i in range(len(labels))
         ]
+        print(f"[BACKEND] Stored {len(agent['prompt_options'])} prompt_options for {agent_id} (source={metadata.get('source', 'unknown')})")
         await sio.emit('agent_state', agent)
 
     # Clear options when waiting dialog is resolved
     if event_type == "state_change" and metadata.get("state") in ("in_progress", "working", "thinking", "ready", "stopped"):
         if agent.get("prompt_options"):
+            print(f"[BACKEND] Clearing prompt_options for {agent_id} (state->{metadata.get('state')})")
             agent["prompt_options"] = []
 
     # Capture task summary from user prompts
@@ -462,7 +464,8 @@ async def agent_event(sid, data: dict):
             "new_state": new_state,
             "timestamp": time.time(),
         })
-        print(f"[BACKEND] Sending agent_state for agent_id={agent['id']}")
+        opts = agent.get("prompt_options", [])
+        print(f"[BACKEND] Sending agent_state for agent_id={agent['id']} (prompt_options={'non-empty: ' + str(len(opts)) if opts else 'empty'})")
         await sio.emit('agent_state', agent)
 
 

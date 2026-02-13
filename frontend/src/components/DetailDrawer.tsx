@@ -240,6 +240,9 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
   const promptOptions: PromptOption[] = agent.prompt_options || [];
   const showInput = isControllable && (agent.state === 'ready' || agent.state === 'waiting_for_input');
   const showOptions = isControllable && agent.state === 'waiting_for_input' && promptOptions.length > 0;
+  if (showOptions) {
+    console.log(`[DetailDrawer] showOptions=true for ${agent.id}, ${promptOptions.length} options:`, promptOptions.map(o => o.label));
+  }
 
   return (
     <Drawer

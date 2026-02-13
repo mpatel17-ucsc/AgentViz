@@ -4,6 +4,7 @@ import socket
 import json
 import tempfile
 import shutil
+import re
 from pathlib import Path
 from contextlib import closing
 
@@ -91,6 +92,52 @@ class GeminiAdapter(BaseAdapter):
         self._gemini_dir_existed = False
         self._current_state = "idle"
 
+    def _parse_prompt_options_from_text(self, text):
+        """Extract Gemini waiting-for-input options from the visible prompt block."""
+        if not text:
+            return []
+
+        clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text)
+        lines = [ln.strip() for ln in clean.splitlines() if ln.strip()]
+        tail = lines[-60:]
+        joined = "\n".join(tail)
+        lower = joined.lower()
+
+        # Gemini permission cards usually contain one of these prompt markers.
+        markers = (
+            "action required",
+            "do you want to proceed",
+            "allow once",
+            "allow for this session",
+            "suggest changes (esc)",
+        )
+        if not any(marker in lower for marker in markers):
+            return []
+
+        # Focus on the latest prompt segment to avoid stale numbered text.
+        start_idx = 0
+        for i, line in enumerate(tail):
+            ll = line.lower()
+            if any(marker in ll for marker in markers):
+                start_idx = i
+        prompt_block = tail[start_idx:]
+
+        options = []
+        for line in prompt_block:
+            m = re.match(r'^[●•\-\s]*([0-9]+)[\.\)]\s+(.+)$', line)
+            if not m:
+                continue
+            idx = m.group(1)
+            label = m.group(2).strip()
+            label_l = label.lower()
+            if any(token in label_l for token in ("allow once", "allow for this session", "suggest changes", "(esc)")):
+                options.append({"label": f"{idx}. {label}", "input": idx})
+
+        if len(options) >= 2:
+            return options
+
+        return []
+
     def _get_state_hook_script(self):
         """
         Generate Python hook script for reliable JSON output.
@@ -164,6 +211,67 @@ def main():
 if __name__ == "__main__":
     main()
 '''
+
+    def _extract_notification_options_from_hook_input(self, hook_input):
+        """Extract user-visible choice options from Gemini Notification payload."""
+        if not isinstance(hook_input, dict):
+            return []
+
+        # Prefer explicit structured options if Gemini provides them.
+        for key in ("options", "choices", "actions"):
+            values = hook_input.get(key)
+            if isinstance(values, list) and values:
+                options = []
+                for idx, item in enumerate(values):
+                    if isinstance(item, dict):
+                        label = str(item.get("label") or item.get("name") or item.get("text") or "").strip()
+                        input_val = str(item.get("input") or item.get("value") or item.get("id") or label).strip()
+                    else:
+                        label = str(item).strip()
+                        input_val = label
+                    if label:
+                        options.append({"label": label, "input": input_val or str(idx)})
+                if options:
+                    return options
+
+        # Gemini notifications often carry prompt text in message/details.
+        text_parts = []
+        for key in ("message", "prompt", "notification_type"):
+            value = hook_input.get(key)
+            if isinstance(value, str):
+                text_parts.append(value)
+        details = hook_input.get("details")
+        if isinstance(details, dict):
+            for value in details.values():
+                if isinstance(value, str):
+                    text_parts.append(value)
+        text = "\n".join(text_parts).strip()
+        if not text:
+            return []
+
+        lower = text.lower()
+        if "(y/n)" in lower or "[y/n]" in lower or "yes/no" in lower:
+            return [{"label": "Yes", "input": "y"}, {"label": "No", "input": "n"}]
+
+        if "/" in text or "|" in text:
+            parts = [p.strip(" .,\t") for p in re.split(r"[\/|]", text) if p.strip()]
+            options = []
+            for part in parts:
+                lp = part.lower()
+                if lp.startswith("yes"):
+                    options.append({"label": part, "input": "y"})
+                elif lp.startswith("no") or "deny" in lp or "reject" in lp or "cancel" in lp:
+                    options.append({"label": part, "input": "n"})
+            if len(options) >= 2:
+                dedup, seen = [], set()
+                for opt in options:
+                    key = (opt["label"], opt["input"])
+                    if key not in seen:
+                        seen.add(key)
+                        dedup.append(opt)
+                return dedup
+
+        return []
 
     def _setup_hooks_config(self):
         """
@@ -457,6 +565,18 @@ if __name__ == "__main__":
                             elif event_type == "notification":
                                 # Agent needs user attention (permission, etc.)
                                 self._enter_waiting_for_input_state()
+                                options = self._extract_notification_options_from_hook_input(hook_input)
+                                has_structured = isinstance(hook_input, dict) and any(
+                                    isinstance(hook_input.get(k), list) and hook_input.get(k)
+                                    for k in ("options", "choices", "actions")
+                                )
+                                debug_print(f"[HOOKS] notification: hook_input has structured options={has_structured}, extracted {len(options)} options")
+                                if options:
+                                    await self.emit_event("prompt_options", {
+                                        "options": [o["label"] for o in options],
+                                        "inputs": [o["input"] for o in options],
+                                        "source": "hook_notification",
+                                    })
                                 await self.emit_event("waiting_for_input", {
                                     "prompt": "Notification from Gemini",
                                     "source": "hook"

@@ -693,6 +693,30 @@ class BaseAdapter:
         self._current_state = "waiting_for_input"
         self._waiting_for_input_since = time.time()
         self._waiting_for_input_response_received = False
+        # Schedule delayed re-parses for controllable agents.
+        # TUI apps render prompt text first, then options in subsequent frames.
+        if self._is_controllable():
+            for delay in (0.3, 0.6, 1.0):
+                asyncio.ensure_future(self._delayed_reparse_options(delay))
+
+    async def _delayed_reparse_options(self, delay):
+        """Re-parse terminal buffer for options after delay.
+        TUI apps render prompt text first, then options in subsequent frames."""
+        await asyncio.sleep(delay)
+        if self._current_state != "waiting_for_input":
+            return
+        if not self._is_controllable():
+            return
+        prompt_text = "\n".join(list(self.terminal_buffer)[-50:])
+        new_options = self._parse_prompt_options_from_text(prompt_text)
+        if new_options and new_options != self.prompt_options:
+            self.prompt_options = new_options
+            debug_print(f"[REPARSE] Found {len(new_options)} options after {delay}s delay: {[o['label'] for o in new_options]}")
+            await self.emit_event("prompt_options", {
+                "options": [o["label"] for o in new_options],
+                "inputs": [o["input"] for o in new_options],
+                "source": "terminal_reparse",
+            })
 
     def _is_controllable(self):
         return getattr(self.monitor, "wrapper", "none") != "none"
@@ -752,6 +776,60 @@ class BaseAdapter:
                         seen.add(k)
                         dedup.append(opt)
                 return dedup
+
+        # TUI arrow-selectable menus (❯ prefix for current selection)
+        # Claude Code and other ink-based TUI CLIs render permission dialogs
+        # as arrow-navigable menus.  The ❯ character marks the current option;
+        # adjacent short lines at similar indentation are the other choices.
+        # Input values are arrow-key escape sequences to navigate from the
+        # current selection to the target option, so the select_option handler
+        # can write them straight to the PTY followed by Enter.
+        lines = clean.splitlines()
+        tail = lines[-40:]
+        # Strip box-drawing borders (│ ┃) that Claude Code's TUI frame uses
+        stripped = [re.sub(r'[│┃]', '', ln).strip() for ln in tail]
+
+        arrow_idx = None
+        for i, ln in enumerate(stripped):
+            if ln.startswith('❯') or ln.startswith('›'):
+                arrow_idx = i
+                break
+
+        if arrow_idx is not None:
+            arrow_label = re.sub(r'^[❯›\s]+', '', stripped[arrow_idx]).strip()
+            if arrow_label:
+                # Collect menu items around the ❯ line
+                items_before = []
+                for j in range(arrow_idx - 1, max(arrow_idx - 8, -1), -1):
+                    cand = stripped[j]
+                    if (not cand or len(cand) > 60
+                            or cand[0] in '─╭╰┌└━╮╯'):
+                        break
+                    items_before.insert(0, cand)
+
+                current_idx = len(items_before)
+                all_items = items_before + [arrow_label]
+
+                for j in range(arrow_idx + 1, min(arrow_idx + 8, len(stripped))):
+                    cand = stripped[j]
+                    if (not cand or len(cand) > 60
+                            or cand[0] in '─╭╰┌└━╮╯'):
+                        break
+                    all_items.append(cand)
+
+                if len(all_items) >= 2:
+                    options = []
+                    for i, label in enumerate(all_items):
+                        delta = i - current_idx
+                        if delta > 0:
+                            input_val = '\x1b[B' * delta   # Down arrows
+                        elif delta < 0:
+                            input_val = '\x1b[A' * (-delta) # Up arrows
+                        else:
+                            input_val = ''                   # Already selected
+                        options.append({"label": label, "input": input_val})
+                    debug_print(f"[TUI_MENU] Parsed {len(options)} arrow-menu options: {[o['label'] for o in options]}")
+                    return options
 
         return []
 
@@ -998,6 +1076,8 @@ class BaseAdapter:
                 # Only trigger waiting_for_input for EXPLICIT prompts, not general output
                 is_explicit_prompt = any(kw in lower_output for kw in approval_keywords)
                 if is_explicit_prompt:
+                    matched_kw = next((kw for kw in approval_keywords if kw in lower_output), None)
+                    debug_print(f"[PROMPT_DETECT] Approval keyword matched: '{matched_kw}'", file=sys.stderr)
                     # Normalize prompt for comparison
                     cleaned_prompt = ' '.join(output_str.strip().split()).lower()[:250]
                     current_time = time.time()
@@ -1015,9 +1095,13 @@ class BaseAdapter:
                         debug_print(f" Detected NEW user approval request in output", file=sys.stderr)
                         # Keep internal state in sync so idle fallback doesn't misclassify this as active work.
                         self._enter_waiting_for_input_state()
-                        if self._is_controllable():
+                        if self._is_controllable() and any(
+                            name in (self.agent_type or "").lower()
+                            for name in ("codex", "gemini", "claude")
+                        ):
                             prompt_text = "\n".join(list(self.terminal_buffer)[-40:]) if self.terminal_buffer else output_str
                             options = self._parse_prompt_options_from_text(prompt_text)
+                            debug_print(f"[PROMPT_DETECT] Parsed {len(options)} options from terminal buffer ({len(prompt_text)} chars)", file=sys.stderr)
                             if options:
                                 self.prompt_options = options
                                 asyncio.create_task(self.emit_event("prompt_options", {

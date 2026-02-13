@@ -4,6 +4,7 @@ import socket
 import json
 import tempfile
 import shutil
+import re
 from pathlib import Path
 from contextlib import closing
 
@@ -118,6 +119,8 @@ def main():
             # Extract notification type if this is a notification
             if "notification_type" in hook_input:
                 data["notification_type"] = hook_input["notification_type"]
+            # Preserve full structured hook payload for prompt-option extraction.
+            data["input"] = hook_input
         except json.JSONDecodeError:
             pass
 
@@ -136,6 +139,55 @@ def main():
 if __name__ == "__main__":
     main()
 '''
+
+    def _extract_permission_options_from_hook_input(self, hook_input):
+        """Extract option labels/inputs from Claude PermissionRequest payload."""
+        if not isinstance(hook_input, dict):
+            return []
+
+        # Prefer explicit structured choice fields if present.
+        for key in ("options", "choices", "actions", "allowed_decisions", "decision_options"):
+            values = hook_input.get(key)
+            if isinstance(values, list) and values:
+                options = []
+                for idx, item in enumerate(values):
+                    if isinstance(item, dict):
+                        label = str(item.get("label") or item.get("name") or item.get("text") or item.get("title") or "").strip()
+                        input_val = str(item.get("input") or item.get("value") or item.get("id") or label).strip()
+                    else:
+                        label = str(item).strip()
+                        input_val = label
+                    if label:
+                        options.append({"label": label, "input": input_val or str(idx)})
+                if options:
+                    return options
+
+        # Some payloads encode choices in human-readable message text.
+        text_parts = []
+        for key in ("message", "prompt", "reason", "description"):
+            value = hook_input.get(key)
+            if isinstance(value, str):
+                text_parts.append(value)
+        details = hook_input.get("details")
+        if isinstance(details, dict):
+            for value in details.values():
+                if isinstance(value, str):
+                    text_parts.append(value)
+        text = "\n".join(text_parts).strip()
+        if not text:
+            return []
+
+        lower = text.lower()
+        if "(y/n)" in lower or "[y/n]" in lower or "yes/no" in lower:
+            return [{"label": "Yes", "input": "y"}, {"label": "No", "input": "n"}]
+
+        options = []
+        for match in re.finditer(r'^\s*(\d+)[\.\)]\s+(.+)$', text, re.MULTILINE):
+            idx = match.group(1)
+            label = match.group(2).strip()
+            if label:
+                options.append({"label": f"{idx}. {label}", "input": idx})
+        return options
 
     def _setup_hooks_config(self):
         """
@@ -328,6 +380,7 @@ if __name__ == "__main__":
                         try:
                             event_data = json.loads(line)
                             event_type = event_data.get("event", "")
+                            hook_input = event_data.get("input", {})
 
                             debug_print(f"[HOOKS] Received event: {event_type}")
 
@@ -426,6 +479,18 @@ if __name__ == "__main__":
                                 # PermissionRequest hook - fires when permission dialog appears
                                 # This is the primary hook for detecting waiting for user input
                                 self._enter_waiting_for_input_state()
+                                options = self._extract_permission_options_from_hook_input(hook_input)
+                                has_structured = isinstance(hook_input, dict) and any(
+                                    isinstance(hook_input.get(k), list) and hook_input.get(k)
+                                    for k in ("options", "choices", "actions", "allowed_decisions", "decision_options")
+                                )
+                                debug_print(f"[HOOKS] permission_request: hook_input has structured options={has_structured}, extracted {len(options)} options")
+                                if options:
+                                    await self.emit_event("prompt_options", {
+                                        "options": [o["label"] for o in options],
+                                        "inputs": [o["input"] for o in options],
+                                        "source": "hook_permission_request",
+                                    })
                                 await self.emit_event("waiting_for_input", {
                                     "prompt": "Permission required",
                                     "source": "hook"
@@ -439,6 +504,14 @@ if __name__ == "__main__":
                             elif event_type == "permission_prompt":
                                 # Notification[permission_prompt] - backup for permission detection
                                 self._enter_waiting_for_input_state()
+                                options = self._extract_permission_options_from_hook_input(hook_input)
+                                debug_print(f"[HOOKS] permission_prompt: extracted {len(options)} options from hook_input")
+                                if options:
+                                    await self.emit_event("prompt_options", {
+                                        "options": [o["label"] for o in options],
+                                        "inputs": [o["input"] for o in options],
+                                        "source": "hook_permission_prompt",
+                                    })
                                 await self.emit_event("waiting_for_input", {
                                     "prompt": "Permission required",
                                     "source": "hook"
