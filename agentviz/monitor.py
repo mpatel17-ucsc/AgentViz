@@ -10,12 +10,13 @@ from .adapters.codex_adapter import CodexAdapter
 from .tmux_runner import TmuxRunner
 
 class Monitor:
-    def __init__(self, agent_id, agent_type, agent_command, workspace, tmux_mode=False):
+    def __init__(self, agent_id, agent_type, agent_command, workspace, tmux_mode=False, remote_host=None):
         self.agent_id = agent_id
         self.agent_type = agent_type
         self.agent_command = agent_command
         self.workspace = workspace
         self.tmux_mode = tmux_mode
+        self.remote_host = remote_host
         self.sio = socketio.Client()
         self.lock = asyncio.Lock()
         # Track whether we've sent agent_stopped (used by cli.py for fallback)
@@ -61,6 +62,7 @@ class Monitor:
                 agent_type=self.agent_type,
                 workspace=self.workspace,
                 command=self.agent_command,
+                remote_host=self.remote_host,
             )
             try:
                 await runner.run()

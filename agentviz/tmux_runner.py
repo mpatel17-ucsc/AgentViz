@@ -37,12 +37,13 @@ class TmuxRunner:
       - Cleanup of tmux + ttyd on exit
     """
 
-    def __init__(self, monitor, agent_id, agent_type, workspace, command):
+    def __init__(self, monitor, agent_id, agent_type, workspace, command, remote_host=None):
         self.monitor = monitor
         self.agent_id = agent_id
         self.agent_type = agent_type
         self.workspace = workspace
         self.command = command
+        self.remote_host = remote_host
         self.session_name = f"agentviz-{agent_id}"
         self.ttyd_process = None
         self.ttyd_port = None
@@ -662,9 +663,12 @@ finally:
             #    keystrokes from the dashboard and feed _ingest_stdin_bytes().
             ttyd_wrapper = self._create_ttyd_wrapper_script()
             self.ttyd_port = find_free_port()
+            ttyd_cmd = ["ttyd", "--port", str(self.ttyd_port), "--writable"]
+            if self.remote_host:
+                ttyd_cmd += ["--interface", "0.0.0.0"]
+            ttyd_cmd += ["python3", ttyd_wrapper]
             self.ttyd_process = subprocess.Popen(
-                ["ttyd", "--port", str(self.ttyd_port), "--writable",
-                 "python3", ttyd_wrapper],
+                ttyd_cmd,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             print(f"[TMUX] Started ttyd on port {self.ttyd_port} (pid={self.ttyd_process.pid})", file=sys.stderr)
@@ -673,10 +677,13 @@ finally:
             self._ttyd_input_task = asyncio.create_task(self._tail_ttyd_input())
 
             # 6. Emit tmux_session_info for dashboard
+            tmux_metadata = {"ttyd_port": self.ttyd_port, "tmux_session": self.session_name}
+            if self.remote_host:
+                tmux_metadata["ttyd_url"] = f"http://{self.remote_host}:{self.ttyd_port}"
             await self.monitor.emit_event(
                 agent_id=self.agent_id, agent_type=self.agent_type,
                 event_type="tmux_session_info", working_dir=self.workspace,
-                metadata={"ttyd_port": self.ttyd_port, "tmux_session": self.session_name},
+                metadata=tmux_metadata,
             )
 
             # 7. Attach to tmux with PTY wrapper for stdin interception.

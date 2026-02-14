@@ -398,8 +398,11 @@ async def agent_event(sid, data: dict):
 
     # Handle tmux_session_info: set ttyd_url, broadcast state, store event, skip state transition
     if event_type == "tmux_session_info":
+        ttyd_url = metadata.get("ttyd_url")
         ttyd_port = metadata.get("ttyd_port")
-        if ttyd_port:
+        if ttyd_url:
+            agent["ttyd_url"] = ttyd_url
+        elif ttyd_port:
             agent["ttyd_url"] = f"http://localhost:{ttyd_port}"
         agent["last_event_at"] = time.time()
         agent_events_store[agent_id].append(data)

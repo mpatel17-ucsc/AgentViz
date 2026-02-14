@@ -12,13 +12,18 @@ def server(args):
         backend_dir = os.path.join(os.path.dirname(__file__), '..', 'backend')
         # Note: Using absolute path for cross-platform compatibility
         uvicorn_path = os.path.join(os.path.dirname(sys.executable), 'uvicorn')
-        
+
+        # --remote overrides bind to 0.0.0.0 so other devices on Tailscale/LAN can connect
+        bind_addr = '0.0.0.0' if args.remote else args.bind
+
         # Start server in the background
         subprocess.Popen(
-            [uvicorn_path, 'main:socket_app', '--host', args.bind, '--port', '8787'],
+            [uvicorn_path, 'main:socket_app', '--host', bind_addr, '--port', '8787'],
             cwd=backend_dir
         )
-        print(f"AgentViz server started at http://{args.bind}:8787")
+        print(f"AgentViz server started at http://{bind_addr}:8787")
+        if args.remote:
+            print("Remote access enabled — server listening on all interfaces.")
     except Exception as e:
         print(f"Failed to start server: {e}", file=sys.stderr)
         sys.exit(1)
@@ -41,7 +46,7 @@ def run(args):
         print("Usage: agentviz run -w <workspace> <agent_type> <command...>", file=sys.stderr)
         sys.exit(1)
 
-    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace, tmux_mode=getattr(args, 'tmux_mode', False))
+    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace, tmux_mode=getattr(args, 'tmux_mode', False), remote_host=getattr(args, 'remote', None))
     interrupted = False
     error_occurred = False
 
@@ -139,12 +144,14 @@ def main():
     # Server Command
     parser_server = subparsers.add_parser("server", help="Start the AgentViz backend server.")
     parser_server.add_argument("--bind", default="127.0.0.1", help="Address to bind the server to.")
+    parser_server.add_argument("--remote", action="store_true", help="Enable remote access (binds to 0.0.0.0 for Tailscale/LAN).")
     parser_server.set_defaults(func=server)
 
     # Run Command
     parser_run = subparsers.add_parser("run", help="Run a coding agent and monitor it.")
     parser_run.add_argument("-w", required=True, help="Workspace directory for the agent.")
     parser_run.add_argument("--tmux-mode", action="store_true", help="Run agent inside a tmux session with a TTYD web terminal.")
+    parser_run.add_argument("--remote", metavar="HOSTNAME", default=None, help="Tailscale/LAN hostname for remote access (e.g. 'manav-macbook'). Makes ttyd URLs accessible from other devices.")
     parser_run.add_argument("agent", help="The agent to run (e.g., 'gemini-cli', 'claude-code').")
     parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="The command to execute the agent.")
     parser_run.set_defaults(func=run)
