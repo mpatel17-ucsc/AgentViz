@@ -872,131 +872,10 @@ class BaseAdapter:
         try:
             data = os.read(self.pty_master_fd, 1024)
             if data:
-                self.last_activity_time = time.time()
-                self._last_screen_change_at = time.time()
-                self._terminal_activity_detected = True
-                self._last_stable_state_emitted = False  # Reset stable state on new output
                 os.write(sys.stdout.fileno(), data)
 
                 output_str = data.decode('utf-8', errors='ignore')
-
-                # Update screen buffer for stability detection
-                self._screen_buffer += output_str
-                if len(self._screen_buffer) > self._screen_buffer_max:
-                    self._screen_buffer = self._screen_buffer[-self._screen_buffer_max:]
-
-                lower_output = output_str.lower()
-
-                # Keywords for detecting EXPLICIT questions/prompts from the agent
-                # Be conservative - only trigger for clear approval/question prompts
-                approval_keywords = [
-                    # Explicit approval prompts
-                    "approve?", "(y/n)", "[y/n]", "yes/no?",
-                    "allow once", "allow for this session",
-                    "do you want to proceed", "do you want to continue",
-                    # Claude Code tool approval
-                    "allow once", "allow for this session", "no, suggest changes",
-                    "deny", "always allow",
-                    # Explicit questions requiring response
-                    "waiting for user confirmation",
-                    "waiting for your input",
-                    "please confirm",
-                    "press enter to continue",
-                    "press enter",
-                    "continue? (y/n)",
-                    "continue? [y/n]",
-                    "proceed? (y/n)",
-                    "proceed? [y/n]",
-                ]
-
-                # NOTE: Task completion is now detected via OTEL idle detection
-                # in activity_monitor_loop(), not by parsing terminal output.
-                # This is more reliable as OTEL events are the source of truth.
-
-                # Only trigger waiting_for_input for EXPLICIT prompts, not general output
-                is_explicit_prompt = any(kw in lower_output for kw in approval_keywords)
-                if is_explicit_prompt:
-                    # Normalize prompt for comparison
-                    cleaned_prompt = ' '.join(output_str.strip().split()).lower()[:250]
-                    current_time = time.time()
-
-                    # Clean up old entries (older than 2x the dedup window)
-                    stale_cutoff = current_time - (self._approval_dedup_window * 2)
-                    self._seen_approval_prompts = {
-                        k: v for k, v in self._seen_approval_prompts.items()
-                        if v > stale_cutoff
-                    }
-
-                    # Check if we've seen this prompt recently
-                    last_seen = self._seen_approval_prompts.get(cleaned_prompt, 0)
-                    if current_time - last_seen > self._approval_dedup_window:
-                        debug_print(f" Detected NEW user approval request in output", file=sys.stderr)
-                        # Keep internal state in sync so idle fallback doesn't misclassify this as active work.
-                        self._enter_waiting_for_input_state()
-                        asyncio.create_task(self.emit_event("waiting_for_input", {
-                            "prompt": output_str.strip()[:300]
-                        }))
-                        self._seen_approval_prompts[cleaned_prompt] = current_time
-                    # Note: Don't reset on non-approval output - that causes duplicates
-
-                # ============================================================
-                # REJECTION/CANCELLATION DETECTION
-                # ============================================================
-                # Research findings (GitHub issues):
-                # - Claude Code: Stop hook does NOT fire on user interrupt (#9516)
-                # - Gemini CLI: No dedicated rejection event (#3385)
-                # - Codex CLI: No interrupt hook (#5905)
-                #
-                # Detection must rely on screen content analysis.
-                # When we detect rejection/cancellation while in waiting_for_input,
-                # transition back to ready/idle.
-                rejection_keywords = [
-                    # Direct rejection/cancellation words
-                    "cancelled", "canceled", "rejected", "denied", "aborted",
-                    "skipping", "skipped", "stopping", "stopped",
-                    # Permission denial phrases
-                    "permission denied", "request cancelled", "request canceled",
-                    "user denied", "operation cancelled", "operation canceled",
-                    "action cancelled", "action canceled", "not allowed",
-                    # Agent acknowledgment of rejection (Claude Code patterns)
-                    "won't proceed", "will not proceed", "won't do that",
-                    "will not do that", "won't make", "will not make",
-                    "i won't", "i will not", "i'll skip", "i will skip",
-                    "okay, i won't", "ok, i won't", "okay, i will not",
-                    "understood, i won't", "understood, i will not",
-                    "alright, i won't", "alright, i will not",
-                    "got it, i won't", "got it, i will not",
-                    "no problem, i won't", "sure, i won't",
-                    # Gemini CLI patterns
-                    "tool was denied", "tool denied", "action denied",
-                    "user chose not to", "user declined", "declined by user",
-                    # Codex CLI patterns
-                    "approval denied", "changes rejected", "not approved",
-                    # Generic task interruption
-                    "interrupted", "task cancelled", "task canceled",
-                    "request denied", "operation stopped",
-                ]
-
-                is_rejection = any(kw in lower_output for kw in rejection_keywords)
-
-                if is_rejection and self._current_state == "waiting_for_input":
-                    # Only treat as rejection AFTER the user has responded to the prompt.
-                    # This avoids false positives when the prompt itself contains words like "deny".
-                    if not self._waiting_for_input_response_received:
-                        debug_print(" Detected rejection keywords in output while waiting_for_input, but no user response yet - ignoring", file=sys.stderr)
-                        return
-                    debug_print(f" Detected REJECTION in output while waiting_for_input -> transitioning to READY", file=sys.stderr)
-                    self._current_state = "ready"
-                    self._task_in_progress = False
-                    asyncio.create_task(self.emit_event("task_completed", {
-                        "reason": "user_rejected",
-                        "source": "screen_rejection"
-                    }))
-                    asyncio.create_task(self.emit_event("state_change", {
-                        "state": "ready",
-                        "source": "screen_rejection",
-                        "detail": "user_rejected_permission"
-                    }))
+                self._ingest_terminal_output(output_str)
 
             else:
                 debug_print(f" PTY master detected EOF", file=sys.stderr)
@@ -1016,106 +895,127 @@ class BaseAdapter:
                 except (ValueError, RuntimeError):
                     pass
 
+    def _ingest_terminal_output(self, output_str):
+        """
+        Process terminal output for state transitions.
+        Used by PTY mode and tmux pane-capture mode.
+        """
+        if not output_str:
+            return
+
+        self.last_activity_time = time.time()
+        self._last_screen_change_at = time.time()
+        self._terminal_activity_detected = True
+        self._last_stable_state_emitted = False  # Reset stable state on new output
+
+        # Update screen buffer for stability detection
+        self._screen_buffer += output_str
+        if len(self._screen_buffer) > self._screen_buffer_max:
+            self._screen_buffer = self._screen_buffer[-self._screen_buffer_max:]
+
+        lower_output = output_str.lower()
+
+        # Keywords for detecting EXPLICIT questions/prompts from the agent
+        # Be conservative - only trigger for clear approval/question prompts
+        approval_keywords = [
+            # Explicit approval prompts
+            "approve?", "(y/n)", "[y/n]", "yes/no?",
+            "allow once", "allow for this session",
+            "do you want to proceed", "do you want to continue",
+            # Claude Code tool approval
+            "allow once", "allow for this session", "no, suggest changes",
+            "deny", "always allow",
+            # Explicit questions requiring response
+            "waiting for user confirmation",
+            "waiting for your input",
+            "please confirm",
+            "press enter to continue",
+            "press enter",
+            "continue? (y/n)",
+            "continue? [y/n]",
+            "proceed? (y/n)",
+            "proceed? [y/n]",
+        ]
+
+        # NOTE: Task completion is now detected via OTEL idle detection
+        # in activity_monitor_loop(), not by parsing terminal output.
+        # This is more reliable as OTEL events are the source of truth.
+
+        # Only trigger waiting_for_input for EXPLICIT prompts, not general output
+        is_explicit_prompt = any(kw in lower_output for kw in approval_keywords)
+        if is_explicit_prompt:
+            # Normalize prompt for comparison
+            cleaned_prompt = ' '.join(output_str.strip().split()).lower()[:250]
+            current_time = time.time()
+
+            # Clean up old entries (older than 2x the dedup window)
+            stale_cutoff = current_time - (self._approval_dedup_window * 2)
+            self._seen_approval_prompts = {
+                k: v for k, v in self._seen_approval_prompts.items()
+                if v > stale_cutoff
+            }
+
+            # Check if we've seen this prompt recently
+            last_seen = self._seen_approval_prompts.get(cleaned_prompt, 0)
+            if current_time - last_seen > self._approval_dedup_window:
+                debug_print(f" Detected NEW user approval request in output", file=sys.stderr)
+                # Keep internal state in sync so idle fallback doesn't misclassify this as active work.
+                self._enter_waiting_for_input_state()
+                asyncio.create_task(self.emit_event("waiting_for_input", {
+                    "prompt": output_str.strip()[:300]
+                }))
+                self._seen_approval_prompts[cleaned_prompt] = current_time
+            # Note: Don't reset on non-approval output - that causes duplicates
+
+        # ============================================================
+        # REJECTION/CANCELLATION DETECTION
+        # ============================================================
+        rejection_keywords = [
+            "cancelled", "canceled", "rejected", "denied", "aborted",
+            "skipping", "skipped", "stopping", "stopped",
+            "permission denied", "request cancelled", "request canceled",
+            "user denied", "operation cancelled", "operation canceled",
+            "action cancelled", "action canceled", "not allowed",
+            "won't proceed", "will not proceed", "won't do that",
+            "will not do that", "won't make", "will not make",
+            "i won't", "i will not", "i'll skip", "i will skip",
+            "okay, i won't", "ok, i won't", "okay, i will not",
+            "understood, i won't", "understood, i will not",
+            "alright, i won't", "alright, i will not",
+            "got it, i won't", "got it, i will not",
+            "no problem, i won't", "sure, i won't",
+            "tool was denied", "tool denied", "action denied",
+            "user chose not to", "user declined", "declined by user",
+            "approval denied", "changes rejected", "not approved",
+            "interrupted", "task cancelled", "task canceled",
+            "request denied", "operation stopped",
+        ]
+
+        is_rejection = any(kw in lower_output for kw in rejection_keywords)
+        if is_rejection and self._current_state == "waiting_for_input":
+            # Only treat as rejection AFTER the user has responded to the prompt.
+            # This avoids false positives when the prompt itself contains words like "deny".
+            if not self._waiting_for_input_response_received:
+                debug_print(" Detected rejection keywords in output while waiting_for_input, but no user response yet - ignoring", file=sys.stderr)
+                return
+            debug_print(f" Detected REJECTION in output while waiting_for_input -> transitioning to READY", file=sys.stderr)
+            self._current_state = "ready"
+            self._task_in_progress = False
+            asyncio.create_task(self.emit_event("task_completed", {
+                "reason": "user_rejected",
+                "source": "screen_rejection"
+            }))
+            asyncio.create_task(self.emit_event("state_change", {
+                "state": "ready",
+                "source": "screen_rejection",
+                "detail": "user_rejected_permission"
+            }))
+
     def _stdin_read_callback(self):
         try:
             data = os.read(sys.stdin.fileno(), 1024)
             if data:
-                if b"\x03" in data:
-                    self._user_interrupt_requested = True
-                    # Mark task as no longer in progress
-                    self._task_in_progress = False
-                    if self.agent_proc_pid:
-                        try:
-                            os.kill(self.agent_proc_pid, signal.SIGINT)
-                        except OSError:
-                            pass
-                    # Don't emit here - let wait_for_process handle it
-                    # This ensures the event is actually sent before cleanup
-                    self.shutdown_event.set()
-                    return
-
-                # Detect Escape key press (task cancellation/interruption)
-                # Escape = \x1b (but \x1b[ is start of ANSI sequence for arrow keys)
-                # Only treat as interrupt if it's bare Escape (not part of sequence)
-                if data == b"\x1b" or (b"\x1b" in data and b"\x1b[" not in data):
-                    if self._current_state in ("waiting_for_input", "in_progress", "working", "thinking"):
-                        debug_print(f" User pressed Escape (current_state={self._current_state}) - potential cancellation", file=sys.stderr)
-                        # Don't immediately transition - let the agent handle it
-                        # But reset the screen change timestamp so idle detection kicks in faster
-                        self._last_screen_change_at = time.time()
-                        # Emit event to track the interrupt attempt
-                        asyncio.create_task(self.emit_event("user_interrupt_attempt", {
-                            "key": "escape",
-                            "previous_state": self._current_state
-                        }))
-
-                if self.pty_master_fd is not None:
-                    # Normalize Enter to CR for TUIs that expect carriage return on PTY input.
-                    if b"\n" in data and b"\r" not in data:
-                        data = data.replace(b"\n", b"\r")
-                    os.write(self.pty_master_fd, data)
-
-                    # Update activity time
-                    self.last_activity_time = time.time()
-
-                    # When user presses Enter (CR or LF), emit user_prompt event
-                    # This signals that user has provided input (for state transitions)
-                    if b"\r" in data or b"\n" in data:
-                        debug_print(f" User pressed Enter (current_state={self._current_state})", file=sys.stderr)
-                        now = time.time()
-
-                        # IMPORTANT: Distinguish between starting a new task vs responding to a prompt
-                        # If we're waiting for input (permission dialog), the user is RESPONDING, not starting a new task
-                        # In this case, we should NOT transition to in_progress - let hooks/idle detect the outcome
-                        if self._current_state == "waiting_for_input":
-                            debug_print(f" User responding to permission prompt - NOT transitioning to in_progress", file=sys.stderr)
-                            # Just update activity timestamps, but don't change state
-                            # The agent will either:
-                            # 1. Fire a hook (Stop/AfterAgent) when it finishes processing the response → ready
-                            # 2. Go idle and the timeout fallback will transition to ready
-                            self._last_user_input_at = now
-                            self._waiting_for_input_response_received = True
-                            self._last_screen_change_at = now
-                            self._terminal_activity_detected = True
-                            # Don't set _task_in_progress = True here
-                            # Don't change _current_state
-                            # Don't emit state_change to in_progress
-                            # Just emit user_prompt to track that user responded
-                            asyncio.create_task(self.emit_event("user_prompt", {
-                                "prompt": "[user response to prompt]"
-                            }))
-                        else:
-                            # User is starting a new task (from ready/idle state)
-                            debug_print(f" User starting new task - transitioning to in_progress", file=sys.stderr)
-                            # Mark that a task is now in progress
-                            self._task_in_progress = True
-                            # Update internal state so idle fallback can resolve to READY if agent goes idle.
-                            self._current_state = "in_progress"
-                            # Track when user provided input
-                            self._last_user_input_at = now
-                            # Reset OTEL idle detection (new task starting)
-                            self._last_otel_activity_at = now  # Treat user input as activity
-                            self._idle_task_completed_emitted = False
-                            # Reset screen stability detection (new task starting)
-                            self._last_screen_change_at = now
-                            self._last_stable_state_emitted = False
-                            self._terminal_activity_detected = True
-                            # Register this agent as active (user just gave it a task)
-                            register_agent_activity(self.agent_id)
-                            # Emit state change to in_progress
-                            asyncio.create_task(self.emit_event("state_change", {
-                                "state": "in_progress",
-                                "source": "user_input"
-                            }))
-                            asyncio.create_task(self.emit_event("user_prompt", {
-                                "prompt": "[user input]"
-                            }))
-                else:
-                    loop = asyncio.get_running_loop()
-                    try:
-                        loop.remove_reader(sys.stdin.fileno())
-                    except (ValueError, RuntimeError):
-                        pass
+                self._ingest_stdin_bytes(data, side_effects=True)
             else:
                 loop = asyncio.get_running_loop()
                 try:
@@ -1129,6 +1029,88 @@ class BaseAdapter:
                 loop.remove_reader(sys.stdin.fileno())
             except (ValueError, RuntimeError):
                 pass
+
+    def _ingest_stdin_bytes(self, data, side_effects=True):
+        """Process stdin bytes for user-input-driven state transitions."""
+        if not data:
+            return
+
+        if side_effects and b"\x03" in data:
+            self._user_interrupt_requested = True
+            # Mark task as no longer in progress
+            self._task_in_progress = False
+            if self.agent_proc_pid:
+                try:
+                    os.kill(self.agent_proc_pid, signal.SIGINT)
+                except OSError:
+                    pass
+            # Don't emit here - let wait_for_process handle it
+            # This ensures the event is actually sent before cleanup
+            self.shutdown_event.set()
+            return
+
+        # Detect Escape key press (task cancellation/interruption)
+        # Escape = \x1b (but \x1b[ is start of ANSI sequence for arrow keys)
+        # Only treat as interrupt if it's bare Escape (not part of sequence)
+        if data == b"\x1b" or (b"\x1b" in data and b"\x1b[" not in data):
+            if self._current_state in ("waiting_for_input", "in_progress", "working", "thinking"):
+                debug_print(f" User pressed Escape (current_state={self._current_state}) - potential cancellation", file=sys.stderr)
+                # Don't immediately transition - let the agent handle it
+                # But reset the screen change timestamp so idle detection kicks in faster
+                self._last_screen_change_at = time.time()
+                # Emit event to track the interrupt attempt
+                asyncio.create_task(self.emit_event("user_interrupt_attempt", {
+                    "key": "escape",
+                    "previous_state": self._current_state
+                }))
+
+        if side_effects and self.pty_master_fd is not None:
+            # Normalize Enter to CR for TUIs that expect carriage return on PTY input.
+            if b"\n" in data and b"\r" not in data:
+                data = data.replace(b"\n", b"\r")
+            os.write(self.pty_master_fd, data)
+
+        # Update activity time
+        self.last_activity_time = time.time()
+
+        # When user presses Enter (CR or LF), emit user_prompt event
+        # This signals that user has provided input (for state transitions)
+        if b"\r" in data or b"\n" in data:
+            debug_print(f" User pressed Enter (current_state={self._current_state})", file=sys.stderr)
+            now = time.time()
+
+            # IMPORTANT: Distinguish between starting a new task vs responding to a prompt
+            # If we're waiting for input (permission dialog), the user is RESPONDING, not starting a new task
+            # In this case, we should NOT transition to in_progress - let hooks/idle detect the outcome
+            if self._current_state == "waiting_for_input":
+                debug_print(f" User responding to permission prompt - NOT transitioning to in_progress", file=sys.stderr)
+                # Just update activity timestamps, but don't change state
+                self._last_user_input_at = now
+                self._waiting_for_input_response_received = True
+                self._last_screen_change_at = now
+                self._terminal_activity_detected = True
+                asyncio.create_task(self.emit_event("user_prompt", {
+                    "prompt": "[user response to prompt]"
+                }))
+            else:
+                # User is starting a new task (from ready/idle state)
+                debug_print(f" User starting new task - transitioning to in_progress", file=sys.stderr)
+                self._task_in_progress = True
+                self._current_state = "in_progress"
+                self._last_user_input_at = now
+                self._last_otel_activity_at = now  # Treat user input as activity
+                self._idle_task_completed_emitted = False
+                self._last_screen_change_at = now
+                self._last_stable_state_emitted = False
+                self._terminal_activity_detected = True
+                register_agent_activity(self.agent_id)
+                asyncio.create_task(self.emit_event("state_change", {
+                    "state": "in_progress",
+                    "source": "user_input"
+                }))
+                asyncio.create_task(self.emit_event("user_prompt", {
+                    "prompt": "[user input]"
+                }))
 
     async def emit_event(self, event_type, metadata=None):
         metadata = metadata or {}
@@ -1178,6 +1160,10 @@ class BaseAdapter:
                     debug_print(f"[ACTIVITY] Actual work ({event_type}) while waiting_for_input, transitioning to IN_PROGRESS", file=sys.stderr)
                     self._task_in_progress = True
                     self._current_state = "in_progress"
+                    # Agent is doing work after approval prompt — user must have responded.
+                    # Set this so the notify hook can process agent-turn-complete correctly
+                    # (without this, the hook ignores turn-complete when response not detected).
+                    self._waiting_for_input_response_received = True
                 else:
                     debug_print(f"[ACTIVITY] Ignoring {event_type} while in waiting_for_input (waiting for actual work or idle)", file=sys.stderr)
                     # Don't change state - let idle timeout handle transition to ready

@@ -6,19 +6,49 @@ import os
 import subprocess
 from agentviz.monitor import Monitor
 
+def _kill_stale_server(port=8787):
+    """Kill any existing process listening on the given port."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = result.stdout.strip().split('\n')
+        for pid in pids:
+            pid = pid.strip()
+            if pid and pid.isdigit():
+                try:
+                    os.kill(int(pid), 9)
+                    print(f"Killed stale process {pid} on port {port}")
+                except ProcessLookupError:
+                    pass
+    except Exception:
+        pass
+
 def server(args):
     print("Starting AgentViz server...")
+
+    # Kill any stale server still holding the port from a previous run
+    _kill_stale_server(8787)
+
     try:
         backend_dir = os.path.join(os.path.dirname(__file__), '..', 'backend')
-        # Note: Using absolute path for cross-platform compatibility
         uvicorn_path = os.path.join(os.path.dirname(sys.executable), 'uvicorn')
-        
-        # Start server in the background
-        subprocess.Popen(
-            [uvicorn_path, 'main:socket_app', '--host', args.bind, '--port', '8787'],
+
+        # --remote overrides bind to 0.0.0.0 so other devices on Tailscale/LAN can connect
+        bind_addr = '0.0.0.0' if args.remote else args.bind
+
+        print(f"AgentViz server running at http://{bind_addr}:8787 (Ctrl+C to stop)")
+        if args.remote:
+            print("Remote access enabled — server listening on all interfaces.")
+
+        # Run server in the foreground so Ctrl+C kills it cleanly
+        subprocess.run(
+            [uvicorn_path, 'main:socket_app', '--host', bind_addr, '--port', '8787'],
             cwd=backend_dir
         )
-        print(f"AgentViz server started at http://{args.bind}:8787")
+    except KeyboardInterrupt:
+        print("\nAgentViz server stopped.")
     except Exception as e:
         print(f"Failed to start server: {e}", file=sys.stderr)
         sys.exit(1)
@@ -41,7 +71,7 @@ def run(args):
         print("Usage: agentviz run -w <workspace> <agent_type> <command...>", file=sys.stderr)
         sys.exit(1)
 
-    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace)
+    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace, tmux_mode=getattr(args, 'tmux_mode', False), remote_host=getattr(args, 'remote', None))
     interrupted = False
     error_occurred = False
 
@@ -139,11 +169,14 @@ def main():
     # Server Command
     parser_server = subparsers.add_parser("server", help="Start the AgentViz backend server.")
     parser_server.add_argument("--bind", default="127.0.0.1", help="Address to bind the server to.")
+    parser_server.add_argument("--remote", action="store_true", help="Enable remote access (binds to 0.0.0.0 for Tailscale/LAN).")
     parser_server.set_defaults(func=server)
 
     # Run Command
     parser_run = subparsers.add_parser("run", help="Run a coding agent and monitor it.")
     parser_run.add_argument("-w", required=True, help="Workspace directory for the agent.")
+    parser_run.add_argument("--tmux-mode", action="store_true", help="Run agent inside a tmux session with a TTYD web terminal.")
+    parser_run.add_argument("--remote", metavar="HOSTNAME", default=None, help="Tailscale/LAN hostname for remote access (e.g. 'manav-macbook'). Makes ttyd URLs accessible from other devices.")
     parser_run.add_argument("agent", help="The agent to run (e.g., 'gemini-cli', 'claude-code').")
     parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="The command to execute the agent.")
     parser_run.set_defaults(func=run)

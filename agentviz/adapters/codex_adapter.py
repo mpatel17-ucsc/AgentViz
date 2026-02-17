@@ -1,14 +1,13 @@
 import asyncio
 import os
-import socket
 import json
 import tempfile
 import shutil
 import toml
 from pathlib import Path
-from contextlib import closing
 
 from .base import BaseAdapter, AGENTVIZ_DEBUG, debug_print, register_agent_activity, is_path_within_dir
+from ..utils import find_free_port
 
 # Import OpenTelemetry protobuf definitions
 try:
@@ -26,13 +25,6 @@ except ImportError:
     debug_print("[OTEL] Warning: fastapi/uvicorn not installed")
     FASTAPI_AVAILABLE = False
 
-
-def find_free_port():
-    """Find a free port"""
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(('', 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
 
 
 class CodexAdapter(BaseAdapter):
@@ -269,11 +261,12 @@ if __name__ == "__main__":
                             # Map Codex events to state transitions
                             # NOTE: Only agent-turn-complete is reliably available via notify
                             if event_type == "agent-turn-complete":
-                                # If we're waiting for input and the user has NOT responded yet,
-                                # ignore a spurious turn-complete/ready transition.
-                                if self._current_state == "waiting_for_input" and not self._waiting_for_input_response_received:
-                                    debug_print("[HOOKS] agent-turn-complete received while still waiting for input (no user response) - ignoring", file=sys.stderr)
-                                    continue
+                                # If we're in waiting_for_input, the agent completing a turn
+                                # IS proof the user responded (agent can't complete without input).
+                                # Mark response received so the transition proceeds.
+                                # This is critical for inputs that bypass _ingest_stdin_bytes (e.g. tmux send-keys).
+                                if self._current_state == "waiting_for_input":
+                                    self._waiting_for_input_response_received = True
                                 # Agent finished a turn - task complete, ready for input
                                 self._current_state = "ready"
                                 self._task_in_progress = False

@@ -1,13 +1,13 @@
 import asyncio
 import os
-import socket
 import json
+import sys
 import tempfile
 import shutil
 from pathlib import Path
-from contextlib import closing
 
 from .base import BaseAdapter, AGENTVIZ_DEBUG, debug_print, register_agent_activity, is_path_within_dir
+from ..utils import find_free_port
 
 # Import OpenTelemetry protobuf definitions
 try:
@@ -26,13 +26,6 @@ except ImportError:
     debug_print("[OTEL] Warning: fastapi/uvicorn not installed")
     FASTAPI_AVAILABLE = False
 
-
-def find_free_port():
-    """Find a free port"""
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(('', 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
 
 
 class GeminiAdapter(BaseAdapter):
@@ -392,8 +385,11 @@ if __name__ == "__main__":
                                 # - If we're NOT in waiting_for_input, this is a new task submission.
                                 #
                                 if self._current_state == "waiting_for_input":
-                                    debug_print(f"[HOOKS] before_agent while waiting_for_input - NOT transitioning to in_progress (awaiting outcome)")
+                                    debug_print(f"[HOOKS] before_agent while waiting_for_input - marking response received, awaiting outcome")
                                     # Don't change state - wait for AfterAgent (denial) or BeforeTool (approval)
+                                    # But DO mark that the user responded, so the AfterAgent hook won't be ignored.
+                                    # This is critical for inputs that bypass _ingest_stdin_bytes (e.g. tmux send-keys).
+                                    self._waiting_for_input_response_received = True
                                 else:
                                     # New task submission - transition to thinking/in_progress
                                     self._current_state = "thinking"

@@ -20,8 +20,9 @@ import KanbanBoard from './components/KanbanBoard';
 import FilterBar from './components/FilterBar';
 import DetailDrawer from './components/DetailDrawer';
 
-// Socket connection
-const socket = io('http://localhost:8787', {
+// Socket connection — uses current hostname so it works from localhost AND remote (Tailscale/LAN)
+const BACKEND_URL = `http://${window.location.hostname}:8787`;
+const socket = io(BACKEND_URL, {
   reconnection: true,
   reconnectionDelay: 1000,
   reconnectionAttempts: 10,
@@ -161,7 +162,7 @@ function App() {
     clearAgents();
     setEvents([]);
     // Also clear on backend
-    fetch('http://localhost:8787/agents', { method: 'DELETE' });
+    fetch(`${BACKEND_URL}/agents`, { method: 'DELETE' });
   }, [clearAgents]);
 
   return (

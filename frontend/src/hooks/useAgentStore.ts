@@ -142,6 +142,8 @@ export const useAgentStore = create<AgentStore>()(
               subprocesses: {},
               first_seen: event.timestamp,
               user_last_seen: null,
+              ttyd_url: null,
+              tmux_session: null,
             };
 
             return {

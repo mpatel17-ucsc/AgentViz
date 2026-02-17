@@ -74,6 +74,8 @@ export interface Agent {
   subprocesses: Record<number, Subprocess>;
   first_seen: number;
   user_last_seen: number | null;
+  ttyd_url: string | null;
+  tmux_session: string | null;
 }
 
 // Agent event from socket

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Drawer,
   Box,
@@ -7,11 +7,19 @@ import {
   Button,
   Chip,
   Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  useMediaQuery,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import StopIcon from '@mui/icons-material/Stop';
 import ReplayIcon from '@mui/icons-material/Replay';
 import TerminalIcon from '@mui/icons-material/Terminal';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import KeyboardReturnIcon from '@mui/icons-material/KeyboardReturn';
 import { Agent, AgentEvent, getColumnConfig } from '../types/agent';
 import { useAgentStore } from '../hooks/useAgentStore';
 import { formatTime, formatRelativeTime } from '../utils/sorting';
@@ -158,6 +166,8 @@ const EventItem: React.FC<{ event: AgentEvent }> = ({ event }) => {
 
 export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) => {
   const { agents, selectedAgentId, drawerOpen, setDrawerOpen, markAgentSeen } = useAgentStore();
+  const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
+  const isTouchDevice = useMediaQuery('(pointer: coarse)');
 
   const agent = selectedAgentId ? agents[selectedAgentId] : null;
   const agentEvents = events.filter((e) => e.agent_id === selectedAgentId);
@@ -186,11 +196,18 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
     }
   };
 
+  const handleSendKey = (key: 'Up' | 'Down' | 'Enter') => {
+    if (selectedAgentId) {
+      socket.emit('control_send_keys', { agent_id: selectedAgentId, key });
+    }
+  };
+
   if (!agent) return null;
 
   const config = getColumnConfig(agent.state);
 
   return (
+    <>
     <Drawer
       anchor="right"
       open={drawerOpen}
@@ -251,6 +268,17 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
 
         {/* Control Buttons */}
         <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
+          {agent.ttyd_url && (
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<TerminalIcon />}
+              onClick={() => setTerminalDialogOpen(true)}
+              color="info"
+            >
+              Open Terminal
+            </Button>
+          )}
           {agent.state === 'error' && (
             <Button
               variant="outlined"
@@ -324,6 +352,117 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         </Typography>
       </Box>
     </Drawer>
+
+    {/* Terminal Dialog */}
+    {agent.ttyd_url && (
+      <Dialog
+        open={terminalDialogOpen}
+        onClose={() => setTerminalDialogOpen(false)}
+        maxWidth={false}
+        PaperProps={{
+          sx: {
+            width: '80vw',
+            height: '70vh',
+            bgcolor: '#1a1a1a',
+            backgroundImage: 'none',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            py: 1,
+            bgcolor: '#111',
+            borderBottom: '1px solid rgba(255,255,255,0.1)',
+          }}
+        >
+          <TerminalIcon sx={{ fontSize: 20 }} />
+          <Typography variant="subtitle1" sx={{ flex: 1 }}>
+            Terminal - {agent.id}
+          </Typography>
+          <IconButton
+            size="small"
+            onClick={() => window.open(agent.ttyd_url!, '_blank')}
+            title="Open in new tab"
+          >
+            <OpenInNewIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+          <IconButton size="small" onClick={() => setTerminalDialogOpen(false)}>
+            <CloseIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <iframe
+            src={agent.ttyd_url}
+            style={{
+              width: '100%',
+              flex: 1,
+              border: 'none',
+              backgroundColor: '#000',
+            }}
+            title={`Terminal for ${agent.id}`}
+          />
+          {isTouchDevice && agent.tmux_session && (
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'center',
+                gap: 2,
+                p: 1.5,
+                bgcolor: '#111',
+                borderTop: '1px solid rgba(255,255,255,0.1)',
+                // Isolate from iframe touch handling: prevent the browser
+                // from interpreting taps on these buttons as scroll/pan
+                // gestures targeting the adjacent ttyd iframe.
+                position: 'relative',
+                zIndex: 10,
+                touchAction: 'manipulation',
+              }}
+            >
+              <IconButton
+                onPointerDown={(e) => { e.preventDefault(); handleSendKey('Up'); }}
+                sx={{
+                  width: 56,
+                  height: 56,
+                  bgcolor: 'rgba(255,255,255,0.1)',
+                  '&:active': { bgcolor: 'rgba(255,255,255,0.3)' },
+                  touchAction: 'manipulation',
+                }}
+              >
+                <ArrowUpwardIcon sx={{ fontSize: 28 }} />
+              </IconButton>
+              <IconButton
+                onPointerDown={(e) => { e.preventDefault(); handleSendKey('Down'); }}
+                sx={{
+                  width: 56,
+                  height: 56,
+                  bgcolor: 'rgba(255,255,255,0.1)',
+                  '&:active': { bgcolor: 'rgba(255,255,255,0.3)' },
+                  touchAction: 'manipulation',
+                }}
+              >
+                <ArrowDownwardIcon sx={{ fontSize: 28 }} />
+              </IconButton>
+              <IconButton
+                onPointerDown={(e) => { e.preventDefault(); handleSendKey('Enter'); }}
+                sx={{
+                  width: 56,
+                  height: 56,
+                  bgcolor: 'rgba(59,130,246,0.3)',
+                  '&:active': { bgcolor: 'rgba(59,130,246,0.5)' },
+                  touchAction: 'manipulation',
+                }}
+              >
+                <KeyboardReturnIcon sx={{ fontSize: 28 }} />
+              </IconButton>
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
+    )}
+    </>
   );
 };
 
