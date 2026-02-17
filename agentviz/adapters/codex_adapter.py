@@ -261,11 +261,12 @@ if __name__ == "__main__":
                             # Map Codex events to state transitions
                             # NOTE: Only agent-turn-complete is reliably available via notify
                             if event_type == "agent-turn-complete":
-                                # If we're waiting for input and the user has NOT responded yet,
-                                # ignore a spurious turn-complete/ready transition.
-                                if self._current_state == "waiting_for_input" and not self._waiting_for_input_response_received:
-                                    debug_print("[HOOKS] agent-turn-complete received while still waiting for input (no user response) - ignoring", file=sys.stderr)
-                                    continue
+                                # If we're in waiting_for_input, the agent completing a turn
+                                # IS proof the user responded (agent can't complete without input).
+                                # Mark response received so the transition proceeds.
+                                # This is critical for inputs that bypass _ingest_stdin_bytes (e.g. tmux send-keys).
+                                if self._current_state == "waiting_for_input":
+                                    self._waiting_for_input_response_received = True
                                 # Agent finished a turn - task complete, ready for input
                                 self._current_state = "ready"
                                 self._task_in_progress = False

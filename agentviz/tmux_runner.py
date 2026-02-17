@@ -677,7 +677,11 @@ finally:
             self._ttyd_input_task = asyncio.create_task(self._tail_ttyd_input())
 
             # 6. Emit tmux_session_info for dashboard
-            tmux_metadata = {"ttyd_port": self.ttyd_port, "tmux_session": self.session_name}
+            tmux_metadata = {
+                "ttyd_port": self.ttyd_port,
+                "tmux_session": self.session_name,
+                "tmux_input_path": self._ttyd_input_path,
+            }
             if self.remote_host:
                 tmux_metadata["ttyd_url"] = f"http://{self.remote_host}:{self.ttyd_port}"
             await self.monitor.emit_event(

@@ -1,4 +1,6 @@
 import os
+import subprocess
+import shutil
 import socketio
 import uvicorn
 from fastapi import FastAPI
@@ -99,6 +101,8 @@ def get_or_create_agent(agent_id: str, agent_type: str, working_dir: str) -> dic
             "user_last_seen": None,
             "task_started": False,
             "ttyd_url": None,
+            "tmux_session": None,
+            "tmux_input_path": None,
         }
         agent_events_store[agent_id] = []
     return agent_store[agent_id]
@@ -400,10 +404,16 @@ async def agent_event(sid, data: dict):
     if event_type == "tmux_session_info":
         ttyd_url = metadata.get("ttyd_url")
         ttyd_port = metadata.get("ttyd_port")
+        tmux_session = metadata.get("tmux_session")
+        tmux_input_path = metadata.get("tmux_input_path")
         if ttyd_url:
             agent["ttyd_url"] = ttyd_url
         elif ttyd_port:
             agent["ttyd_url"] = f"http://localhost:{ttyd_port}"
+        if tmux_session:
+            agent["tmux_session"] = tmux_session
+        if tmux_input_path:
+            agent["tmux_input_path"] = tmux_input_path
         agent["last_event_at"] = time.time()
         agent_events_store[agent_id].append(data)
         await sio.emit('agent_event', data)
@@ -519,6 +529,60 @@ async def control_start_task(sid, data: dict):
             "timestamp": time.time(),
         })
         print(f"[BACKEND] Agent {agent_id} start task requested, moved to IN_PROGRESS")
+
+
+@sio.event
+async def control_send_keys(sid, data: dict):
+    """Send tmux keys (Up/Down/Enter) to an agent's tmux session"""
+    agent_id = data.get('agent_id')
+    key = data.get('key')
+    if agent_id and agent_id in agent_store:
+        agent = agent_store[agent_id]
+        session = agent.get('tmux_session')
+        if not session or key not in ("Up", "Down", "Enter"):
+            return
+
+        tmux_bin = shutil.which("tmux")
+        if not tmux_bin:
+            print(f"[BACKEND] control_send_keys failed for {agent_id}: tmux not found in PATH")
+            return
+
+        try:
+            result = subprocess.run(
+                [tmux_bin, "send-keys", "-t", session, key],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                print(
+                    f"[BACKEND] control_send_keys failed for {agent_id} "
+                    f"(session={session}, key={key}, rc={result.returncode}, stderr={result.stderr.strip()})"
+                )
+                return
+            print(f"[BACKEND] Sent key '{key}' to tmux session '{session}' for agent {agent_id}")
+        except Exception as e:
+            print(f"[BACKEND] control_send_keys exception for {agent_id}: {e}")
+            return
+
+        # Mirror virtual keypad input into tmux_runner ttyd capture so adapters
+        # process it through _ingest_stdin_bytes() exactly like real ttyd input.
+        input_path = agent.get("tmux_input_path")
+        if input_path:
+            key_bytes = {
+                "Up": b"\x1b[A",
+                "Down": b"\x1b[B",
+                "Enter": b"\r",
+            }.get(key)
+            if key_bytes is not None:
+                try:
+                    with open(input_path, "ab") as f:
+                        f.write(key_bytes)
+                except Exception as e:
+                    print(
+                        f"[BACKEND] control_send_keys mirror failed for {agent_id} "
+                        f"(path={input_path}, key={key}): {e}"
+                    )
 
 
 # ============================================

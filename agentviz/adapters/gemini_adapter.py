@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import sys
 import tempfile
 import shutil
 from pathlib import Path
@@ -384,8 +385,11 @@ if __name__ == "__main__":
                                 # - If we're NOT in waiting_for_input, this is a new task submission.
                                 #
                                 if self._current_state == "waiting_for_input":
-                                    debug_print(f"[HOOKS] before_agent while waiting_for_input - NOT transitioning to in_progress (awaiting outcome)")
+                                    debug_print(f"[HOOKS] before_agent while waiting_for_input - marking response received, awaiting outcome")
                                     # Don't change state - wait for AfterAgent (denial) or BeforeTool (approval)
+                                    # But DO mark that the user responded, so the AfterAgent hook won't be ignored.
+                                    # This is critical for inputs that bypass _ingest_stdin_bytes (e.g. tmux send-keys).
+                                    self._waiting_for_input_response_received = True
                                 else:
                                     # New task submission - transition to thinking/in_progress
                                     self._current_state = "thinking"

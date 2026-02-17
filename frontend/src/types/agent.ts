@@ -75,6 +75,7 @@ export interface Agent {
   first_seen: number;
   user_last_seen: number | null;
   ttyd_url: string | null;
+  tmux_session: string | null;
 }
 
 // Agent event from socket
