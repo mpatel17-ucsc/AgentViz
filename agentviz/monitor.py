@@ -7,6 +7,7 @@ from .adapters.base import BaseAdapter
 from .adapters.gemini_adapter import GeminiAdapter
 from .adapters.claude_adapter import ClaudeAdapter
 from .adapters.codex_adapter import CodexAdapter
+from .adapters.synthetic_adapter import SyntheticAdapter
 from .tmux_runner import TmuxRunner
 
 class Monitor:
@@ -30,6 +31,7 @@ class Monitor:
             "codex": CodexAdapter,
             "codex-cli": CodexAdapter,
             "openai-codex": CodexAdapter,
+            "synthetic": SyntheticAdapter,
         }
 
     async def emit_event(self, agent_id, agent_type, event_type, working_dir, metadata):
