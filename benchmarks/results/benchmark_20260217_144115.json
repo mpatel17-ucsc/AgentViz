@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-02-17T14:35:25.738498",
+  "server_url": "http://localhost:8787",
+  "backend": {
+    "latency": {
+      "status": "ok",
+      "events_count": 30,
+      "latency_ms": {
+        "p50": 1.73,
+        "p95": 5.72,
+        "p99": 11.39,
+        "max": 13.01,
+        "mean": 2.48
+      }
+    },
+    "throughput": {
+      "status": "ok",
+      "events_count": 410,
+      "duration_sec": 0.33,
+      "events_per_sec": 1243.88
+    },
+    "scalability": {
+      "status": "ok",
+      "levels": [
+        {
+          "agents": 1,
+          "total_time_sec": 2.21,
+          "per_agent_time_sec": 2.21,
+          "cpu_percent": 14.2,
+          "memory_delta_mb": -256.0
+        },
+        {
+          "agents": 2,
+          "total_time_sec": 2.23,
+          "per_agent_time_sec": 1.11,
+          "cpu_percent": 14.0,
+          "memory_delta_mb": -29.4
+        },
+        {
+          "agents": 4,
+          "total_time_sec": 2.31,
+          "per_agent_time_sec": 0.58,
+          "cpu_percent": 27.6,
+          "memory_delta_mb": -14.2
+        },
+        {
+          "agents": 8,
+          "total_time_sec": 3.53,
+          "per_agent_time_sec": 0.44,
+          "cpu_percent": 21.4,
+          "memory_delta_mb": 103.3
+        }
+      ]
+    },
+    "reliability": {
+      "status": "ok",
+      "attempts": 10,
+      "successes": 10,
+      "success_rate_percent": 100.0
+    }
+  },
+  "frontend": {
+    "status": "error",
+    "reason": "timeout"
+  }
+}

@@ -111,7 +111,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
   };
 
   const activeAgent = activeId ? agents[activeId] : null;
-
   return (
     <DndContext
       sensors={sensors}

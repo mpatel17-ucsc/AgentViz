@@ -5,5 +5,31 @@
     "@mui/icons-material": "^7.3.7",
     "@mui/material": "^7.3.7",
     "socket.io-client": "^4.8.3"
-  }
+  },
+  "name": "agentviz",
+  "version": "1.0.0",
+  "description": "This distribution contains all the components from both the [OpenTelemetry Collector](https://github.com/open-telemetry/opentelemetry-collector) repository and the [OpenTelemetry Collector Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib) repository. This distribution includes open source and vendor supported components.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2",
+    "tsx": "^4.21.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mpatel17-ucsc/CSE247B_VisualizationCodingAgents.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mpatel17-ucsc/CSE247B_VisualizationCodingAgents/issues"
+  },
+  "homepage": "https://github.com/mpatel17-ucsc/CSE247B_VisualizationCodingAgents#readme"
 }

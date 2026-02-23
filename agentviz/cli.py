@@ -59,7 +59,7 @@ def run(args):
     import socketio
 
     agent_type = args.agent
-    agent_id = f"{agent_type}-{os.getpid()}"
+    agent_id = getattr(args, 'id', None) or f"{agent_type}-{os.getpid()}"
     workspace = os.path.abspath(args.w)
 
     if not os.path.isdir(workspace):
@@ -175,6 +175,7 @@ def main():
     # Run Command
     parser_run = subparsers.add_parser("run", help="Run a coding agent and monitor it.")
     parser_run.add_argument("-w", required=True, help="Workspace directory for the agent.")
+    parser_run.add_argument("-i", "--id", default=None, help="Custom agent ID (default: <agent_type>-<pid>).")
     parser_run.add_argument("--tmux-mode", action="store_true", help="Run agent inside a tmux session with a TTYD web terminal.")
     parser_run.add_argument("--remote", metavar="HOSTNAME", default=None, help="Tailscale/LAN hostname for remote access (e.g. 'manav-macbook'). Makes ttyd URLs accessible from other devices.")
     parser_run.add_argument("agent", help="The agent to run (e.g., 'gemini-cli', 'claude-code').")

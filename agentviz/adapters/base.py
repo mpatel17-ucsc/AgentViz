@@ -735,12 +735,15 @@ class BaseAdapter:
                 # Save original stdin settings and set cbreak mode
                 # cbreak mode passes characters immediately but preserves more terminal behavior
                 # than raw mode (like Ctrl+C handling)
-                self.old_stdin_settings = termios.tcgetattr(sys.stdin.fileno())
-                tty.setcbreak(sys.stdin.fileno())
-
-                # Add stdin reader to pass input to PTY
+                # NOTE: Skip when stdin is not a TTY (e.g. benchmark harness with stdin=DEVNULL)
                 loop = asyncio.get_running_loop()
-                loop.add_reader(sys.stdin.fileno(), self._stdin_read_callback)
+                if sys.stdin.isatty():
+                    self.old_stdin_settings = termios.tcgetattr(sys.stdin.fileno())
+                    tty.setcbreak(sys.stdin.fileno())
+                    loop.add_reader(sys.stdin.fileno(), self._stdin_read_callback)
+                else:
+                    self.old_stdin_settings = None
+                    debug_print(" stdin is not a TTY, skipping cbreak/reader setup", file=sys.stderr)
 
                 # Add PTY reader
                 loop.add_reader(self.pty_master_fd, self._pty_read_callback)

@@ -108,6 +108,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging }) => {
       style={style}
       {...attributes}
       {...listeners}
+      data-agent-id={agent.id}
       onClick={handleClick}
       sx={{
         p: 1.5,
