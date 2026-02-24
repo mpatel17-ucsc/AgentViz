@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import shutil
+import time
 from pathlib import Path
 
 # Per-workspace coordination files (shared across agents in the same workspace)
@@ -73,6 +74,14 @@ class ClaudeAdapter(BaseAdapter):
         self._state_dir = None
         self._claude_settings_backup = None
         self._current_state = "idle"
+
+        # Deferred-Stop: when Stop fires immediately after a permission response,
+        # it may be a turn boundary before PreToolUse (approval path), not a real
+        # task completion. We defer the transition to ready and wait up to 1 second
+        # for a PreToolUse to arrive. If PreToolUse arrives → approval, cancel the
+        # deferred ready. If timeout expires → denial/completion, emit ready.
+        self._stop_pending_after_permission = False
+        self._stop_pending_since = 0.0
 
     def _get_state_hook_script(self):
         """
@@ -318,6 +327,31 @@ if __name__ == "__main__":
             self.env['AGENTVIZ_STATE_FILE'] = self._state_file
         self.env['AGENTVIZ_AGENT_ID'] = self.agent_id
 
+    async def _resolve_pending_stop_if_any(self):
+        """Emit ready state for a deferred Stop event if one is pending.
+
+        Called before processing any non-pre_tool_use hook event, and after
+        the 1-second timeout, to flush a deferred Stop that was never confirmed
+        as a turn boundary by a following PreToolUse.
+        """
+        if not self._stop_pending_after_permission:
+            return
+        self._stop_pending_after_permission = False
+        self._stop_pending_since = 0.0
+        debug_print("[HOOKS] Resolving deferred Stop → ready (no PreToolUse arrived)")
+        if self._current_state == "waiting_for_input":
+            self._current_state = "ready"
+            self._task_in_progress = False
+            await self.emit_event("task_completed", {
+                "reason": "hook_stop_deferred",
+                "source": "hook"
+            })
+            await self.emit_event("state_change", {
+                "state": "ready",
+                "source": "hook",
+                "hook_event": "stop"
+            })
+
     async def _monitor_state_file(self):
         """Monitor the state file for hook events and emit state changes"""
         debug_print("[HOOKS] State file monitor started")
@@ -330,6 +364,12 @@ if __name__ == "__main__":
             if self._process_exited:
                 debug_print("[HOOKS] Process exited, stopping state monitor")
                 break
+
+            # Timeout: if a deferred Stop has been waiting more than 1 second without
+            # a following PreToolUse, treat it as a genuine task completion (denial path).
+            if self._stop_pending_after_permission and (time.monotonic() - self._stop_pending_since) > 1.0:
+                debug_print("[HOOKS] Deferred Stop timed out (>1s, no PreToolUse) - resolving as ready")
+                await self._resolve_pending_stop_if_any()
 
             try:
                 if os.path.exists(self._state_file):
@@ -353,6 +393,11 @@ if __name__ == "__main__":
                             event_type = event_data.get("event", "")
 
                             debug_print(f"[HOOKS] Received event: {event_type}")
+
+                            # Flush any deferred Stop before processing any event OTHER than
+                            # pre_tool_use (which clears the deferred stop itself).
+                            if event_type != "pre_tool_use":
+                                await self._resolve_pending_stop_if_any()
 
                             # Map hook events to state transitions
                             # See: https://code.claude.com/docs/en/hooks for lifecycle
@@ -398,6 +443,12 @@ if __name__ == "__main__":
 
                             elif event_type == "pre_tool_use":
                                 # PreToolUse fires before a tool executes.
+                                # If a deferred Stop is pending (approval path), cancel it —
+                                # the Stop was just a turn boundary, not a real task completion.
+                                if self._stop_pending_after_permission:
+                                    debug_print("[HOOKS] PreToolUse confirms approval path - cancelling deferred Stop")
+                                    self._stop_pending_after_permission = False
+                                    self._stop_pending_since = 0.0
                                 # This transitions from "thinking" to "working".
                                 self._current_state = "working"
                                 register_agent_activity(self.agent_id)
@@ -424,9 +475,19 @@ if __name__ == "__main__":
                                 # If we're waiting for input and the user has NOT responded yet,
                                 # ignore a spurious Stop/ready transition.
                                 if self._current_state == "waiting_for_input" and not self._waiting_for_input_response_received:
-                                    debug_print("[HOOKS] stop received while still waiting for input (no user response) - ignoring", file=sys.stderr)
+                                    debug_print("[HOOKS] stop received while still waiting for input (no user response) - ignoring")
                                     continue
-                                # Claude finished responding - task complete
+                                # If the user DID respond (yes/no to a permission), defer this Stop.
+                                # Claude Code sometimes fires UserPromptSubmit → Stop → PreToolUse
+                                # (the Stop is just a turn boundary before tool execution).
+                                # We wait up to 1 second to see if PreToolUse arrives (approval)
+                                # before resolving to ready (denial or true completion).
+                                if self._current_state == "waiting_for_input" and self._waiting_for_input_response_received:
+                                    debug_print("[HOOKS] stop received after permission response - deferring (checking for PreToolUse)")
+                                    self._stop_pending_after_permission = True
+                                    self._stop_pending_since = time.monotonic()
+                                    continue
+                                # Normal stop outside waiting_for_input: task complete
                                 self._current_state = "ready"
                                 self._task_in_progress = False
                                 await self.emit_event("task_completed", {
