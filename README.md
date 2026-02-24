@@ -313,6 +313,10 @@ Codex CLI:
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
 ```
 
+## Experiments
+![AgentViz Dashboard](images/P50 (ms), P95 (ms), Mean (ms) and Peak RSS (MB).png)
+![AgentViz Agent Detail View](images/Peak RSS (MB) vs. Tool.png)
+
 ## Troubleshooting
 
 - `Error: Could not connect to AgentViz server at http://localhost:8787`
