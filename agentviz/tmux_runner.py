@@ -149,6 +149,12 @@ class TmuxRunner:
         if hasattr(self.adapter, "_codex_home") and self.adapter._codex_home:
             self.adapter.env["CODEX_HOME"] = self.adapter._codex_home
 
+        # Inject per-agent state routing env vars (must come after env is set up).
+        # These allow the shared workspace hook script to route events to the
+        # correct agent's state file when multiple agents share a workspace.
+        if hasattr(self.adapter, "_inject_state_env_vars"):
+            self.adapter._inject_state_env_vars()
+
     def _get_adapter_env(self):
         """
         Collect env vars the agent needs inside the tmux session.
@@ -570,7 +576,11 @@ finally:
     # ------------------------------------------------------------------
 
     def _clean_stale_hooks(self):
-        """Remove stale agentviz hook configs pointing to deleted temp dirs."""
+        """Remove stale agentviz hook configs from previous interrupted runs.
+
+        Skips cleanup when any registered agent process is still alive, so active
+        agents running in parallel are not disrupted.
+        """
         for dirname, filename, marker in [
             (".gemini", "settings.json", "agentviz-"),
             (".claude", "settings.local.json", "agentviz-"),
@@ -586,8 +596,35 @@ finally:
                 hooks_str = json.dumps(config["hooks"])
                 if marker not in hooks_str:
                     continue
+
+                # Check the active agents registry before cleaning up.
+                # If any registered process is still alive, this is not stale.
+                active_file = os.path.join(self.workspace, dirname, ".agentviz-active.json")
+                if os.path.exists(active_file):
+                    try:
+                        with open(active_file) as f:
+                            data = json.load(f)
+                        alive = any(
+                            self._is_pid_alive(int(a.rsplit("-", 1)[-1]))
+                            for a in data.get("agents", [])
+                            if a.rsplit("-", 1)[-1].isdigit()
+                        )
+                        if alive:
+                            continue  # Active agents running, don't touch their hooks
+                        # All processes are dead - registry is stale, clean it up
+                        try:
+                            os.remove(active_file)
+                            lock_file = active_file + ".lock"
+                            if os.path.exists(lock_file):
+                                os.remove(lock_file)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass  # Unreadable registry → assume stale
+
                 del config["hooks"]
                 config.pop("hooksConfig", None)
+                config.pop("telemetry", None)
                 if config:
                     with open(path, 'w') as f:
                         json.dump(config, f, indent=2)
@@ -596,9 +633,29 @@ finally:
                     parent = os.path.join(self.workspace, dirname)
                     if os.path.isdir(parent) and not os.listdir(parent):
                         os.rmdir(parent)
+
+                # Clean up shared hook script and backup file left by new-format hooks
+                for aux_file in [
+                    os.path.join(self.workspace, dirname, "agentviz-hook.py"),
+                    os.path.join(self.workspace, dirname, ".agentviz-settings-backup.json"),
+                ]:
+                    if os.path.exists(aux_file):
+                        try:
+                            os.remove(aux_file)
+                        except Exception:
+                            pass
+
                 print(f"[TMUX] Cleaned stale hooks from {path}", file=sys.stderr)
             except (json.JSONDecodeError, IOError) as e:
                 print(f"[TMUX] Warning: could not clean {path}: {e}", file=sys.stderr)
+
+    def _is_pid_alive(self, pid: int) -> bool:
+        """Return True if a process with the given PID is still running."""
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, OSError):
+            return False
 
     # ------------------------------------------------------------------
     # Main run

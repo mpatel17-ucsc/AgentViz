@@ -1,10 +1,16 @@
 import asyncio
+import fcntl
 import os
 import json
 import sys
 import tempfile
 import shutil
 from pathlib import Path
+
+# Per-workspace coordination files (shared across agents in the same workspace)
+_AGENTVIZ_HOOK_FILENAME = "agentviz-hook.py"
+_AGENTVIZ_ACTIVE_FILENAME = ".agentviz-active.json"
+_AGENTVIZ_BACKUP_FILENAME = ".agentviz-settings-backup.json"
 
 from .base import BaseAdapter, AGENTVIZ_DEBUG, debug_print, register_agent_activity, is_path_within_dir
 from ..utils import find_free_port
@@ -86,27 +92,31 @@ class GeminiAdapter(BaseAdapter):
 
     def _get_state_hook_script(self):
         """
-        Generate Python hook script for reliable JSON output.
+        Generate shared Python hook script that routes events via AGENTVIZ_STATE_FILE env var.
+
+        Using env-var routing allows multiple agents in the same workspace to each
+        receive only their own hook events, even though they share one settings.json.
 
         IMPORTANT: Gemini CLI hooks require "Silence is Mandatory" -
         scripts must output ONLY JSON to stdout.
-        See: https://geminicli.com/docs/hooks/reference/
-
-        Python scripts provide reliable, clean JSON output without
-        shell initialization noise.
         """
-        return f'''#!/usr/bin/env python3
-# Gemini CLI state hook for agentviz
-# This script is called by Gemini CLI hooks to track state changes
+        return '''#!/usr/bin/env python3
+# Gemini CLI state hook for agentviz (shared across all instances in this workspace)
+# Routes events to the correct agent via AGENTVIZ_STATE_FILE environment variable.
 import sys
 import json
 import time
+import os
 
 def main():
     event = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 
-    # Read stdin for hook input JSON (contains tool info, prompt, etc.)
-    # Gemini passes structured JSON input to hooks via stdin
+    # Per-agent routing: each agent sets AGENTVIZ_STATE_FILE in its own environment.
+    # If not set, this hook invocation is not for an agentviz-monitored agent - skip.
+    state_file = os.environ.get("AGENTVIZ_STATE_FILE", "")
+    if not state_file:
+        sys.exit(0)
+
     stdin_data = None
     hook_input = None
     try:
@@ -117,41 +127,31 @@ def main():
     except (json.JSONDecodeError, IOError):
         pass
 
-    # Build event record
-    data = {{
+    data = {
         "event": event,
         "timestamp": int(time.time() * 1000),
-        "agent_id": "{self.agent_id}"
-    }}
+        "agent_id": os.environ.get("AGENTVIZ_AGENT_ID", "unknown"),
+    }
 
-    # Extract useful fields from hook input
     if hook_input and isinstance(hook_input, dict):
-        # Tool name for BeforeTool/AfterTool
         if "tool_name" in hook_input:
             data["tool_name"] = hook_input["tool_name"]
-        # Notification type for Notification events
         if "notification_type" in hook_input:
             data["notification_type"] = hook_input["notification_type"]
-        # Prompt for BeforeAgent
         if "prompt" in hook_input:
             data["prompt_preview"] = str(hook_input["prompt"])[:100]
-        # Session source for SessionStart
         if "source" in hook_input:
             data["source"] = hook_input["source"]
-        # Store full input for debugging (truncated)
         data["input"] = hook_input
 
-    # Append to state file
     try:
-        with open("{self._state_file}", "a") as f:
+        with open(state_file, "a") as f:
             f.write(json.dumps(data) + "\\n")
             f.flush()
     except IOError as e:
-        sys.stderr.write(f"Failed to write state: {{e}}\\n")
+        sys.stderr.write(f"Failed to write state: {e}\\n")
         sys.exit(1)
 
-    # Exit 0 = success, allow the operation to proceed
-    # Output nothing to stdout (Silence is Mandatory)
     sys.exit(0)
 
 if __name__ == "__main__":
@@ -161,101 +161,89 @@ if __name__ == "__main__":
     def _setup_hooks_config(self):
         """
         Set up Gemini CLI hooks configuration for state tracking.
-        Creates/modifies .gemini/settings.json in the working directory.
+
+        Uses a shared hook script at a fixed workspace path (.gemini/agentviz-hook.py)
+        with per-agent routing via the AGENTVIZ_STATE_FILE environment variable.
+        This prevents multiple agents in the same workspace from overwriting each
+        other's hook configurations.
         """
         # Create unique state directory for this agent instance
         self._state_dir = tempfile.mkdtemp(prefix=f"agentviz-gemini-{self.agent_id}-")
         self._state_file = os.path.join(self._state_dir, "state.jsonl")
-
-        # Create state file
         Path(self._state_file).touch()
 
-        # Create hook script (Python for reliable JSON output)
-        hook_script_path = os.path.join(self._state_dir, "state-hook.py")
+        gemini_dir = os.path.join(self.working_dir, ".gemini")
+        self._gemini_dir_existed = os.path.exists(gemini_dir)
+        os.makedirs(gemini_dir, exist_ok=True)
+
+        # Write shared hook script at a stable workspace-local path.
+        # All agents in this workspace share the same script; per-agent routing
+        # is handled via the AGENTVIZ_STATE_FILE env var set in each agent's session.
+        hook_script_path = os.path.join(gemini_dir, _AGENTVIZ_HOOK_FILENAME)
         with open(hook_script_path, 'w') as f:
             f.write(self._get_state_hook_script())
         os.chmod(hook_script_path, 0o755)
+        debug_print(f"[HOOKS] Wrote shared Gemini hook script: {hook_script_path}")
 
-        debug_print(f"[HOOKS] Created Gemini hook script: {hook_script_path}")
+        # --- Ref-counted workspace registration ---
+        # Track active agents so cleanup only restores settings when the last one exits.
+        settings_path = os.path.join(gemini_dir, "settings.json")
+        active_path = os.path.join(gemini_dir, _AGENTVIZ_ACTIVE_FILENAME)
+        backup_path = os.path.join(gemini_dir, _AGENTVIZ_BACKUP_FILENAME)
+        lock_path = active_path + ".lock"
 
-        # Build hooks configuration for Gemini CLI
-        # See: https://geminicli.com/docs/hooks/
-        # See: https://geminicli.com/docs/hooks/reference/
-        # See: https://geminicli.com/docs/get-started/configuration/
-        #
-        # Hook Lifecycle Order:
-        # 1. SessionStart - session begins
-        # 2. BeforeAgent - user submits prompt (THINKING state)
-        # 3. BeforeTool - tool about to execute (WORKING state)
-        # 4. AfterTool - tool execution completes
-        # 5. AfterAgent - agent finishes responding (READY state)
-        # 6. Notification - system events like tool permissions (WAITING_FOR_INPUT)
-        # 7. SessionEnd - session terminates (STOPPED state)
-        #
-        # IMPORTANT: Use python3 explicitly to ensure the Python script runs correctly
+        is_first = False
+        try:
+            with open(lock_path, 'w') as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    if os.path.exists(active_path):
+                        with open(active_path) as f:
+                            data = json.load(f)
+                    else:
+                        data = {"agents": []}
+                    is_first = len(data["agents"]) == 0
+                    if self.agent_id not in data["agents"]:
+                        data["agents"].append(self.agent_id)
+                    with open(active_path, 'w') as f:
+                        json.dump(data, f)
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+        except Exception as e:
+            debug_print(f"[HOOKS] Registry warning: {e}")
+            is_first = True
+
+        # Only the first agent in this workspace saves the original settings.json.
+        if is_first and os.path.exists(settings_path) and not os.path.exists(backup_path):
+            try:
+                with open(settings_path) as f:
+                    original = f.read()
+                # Don't overwrite backup if it already has agentviz content
+                if _AGENTVIZ_HOOK_FILENAME not in original:
+                    with open(backup_path, 'w') as f:
+                        f.write(original)
+                    self._gemini_settings_backup = original
+                    debug_print(f"[HOOKS] Backed up original settings.json")
+            except Exception as e:
+                debug_print(f"[HOOKS] Backup warning: {e}")
+
+        # Build hooks config pointing to the shared hook script
         hooks_config = {
-            # Primary toggle for hooks system
-            # See: https://geminicli.com/docs/hooks/reference/
             "hooksConfig": {
                 "enabled": True,
-                "showIndicators": True  # Show visual indicators when hooks run (helps debugging)
+                "showIndicators": True
             },
             "hooks": {
-                "SessionStart": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} session_start",
-                        "timeout": 5000
-                    }]
-                }],
-                "BeforeAgent": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} before_agent",
-                        "timeout": 5000
-                    }]
-                }],
-                "AfterAgent": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} after_agent",
-                        "timeout": 5000
-                    }]
-                }],
-                "BeforeTool": [{
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} before_tool",
-                        "timeout": 5000
-                    }]
-                }],
-                "AfterTool": [{
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} after_tool",
-                        "timeout": 5000
-                    }]
-                }],
-                "Notification": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} notification",
-                        "timeout": 5000
-                    }]
-                }],
-                "SessionEnd": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} session_end",
-                        "timeout": 5000
-                    }]
-                }]
+                "SessionStart": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} session_start", "timeout": 5000}]}],
+                "BeforeAgent": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} before_agent", "timeout": 5000}]}],
+                "AfterAgent": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} after_agent", "timeout": 5000}]}],
+                "BeforeTool": [{"matcher": "*", "hooks": [{"type": "command", "command": f"python3 {hook_script_path} before_tool", "timeout": 5000}]}],
+                "AfterTool": [{"matcher": "*", "hooks": [{"type": "command", "command": f"python3 {hook_script_path} after_tool", "timeout": 5000}]}],
+                "Notification": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} notification", "timeout": 5000}]}],
+                "SessionEnd": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} session_end", "timeout": 5000}]}],
             }
         }
 
-        # Add telemetry config if we have OTEL
         if self.port:
             hooks_config["telemetry"] = {
                 "enabled": True,
@@ -264,61 +252,107 @@ if __name__ == "__main__":
                 "otlpProtocol": "http"
             }
 
-        # Write to project .gemini/settings.json
-        gemini_dir = os.path.join(self.working_dir, ".gemini")
-        settings_path = os.path.join(gemini_dir, "settings.json")
-
-        self._gemini_dir_existed = os.path.exists(gemini_dir)
-        os.makedirs(gemini_dir, exist_ok=True)
-
-        # Backup existing settings
-        if os.path.exists(settings_path):
-            with open(settings_path, 'r') as f:
-                self._gemini_settings_backup = f.read()
-            # Merge with existing settings
+        # Merge with the original user settings if we have a backup
+        if os.path.exists(backup_path):
             try:
-                existing = json.loads(self._gemini_settings_backup)
-                # Always enable hooks
+                with open(backup_path) as f:
+                    existing = json.loads(f.read())
                 existing["hooksConfig"] = hooks_config["hooksConfig"]
                 existing["hooks"] = hooks_config["hooks"]
                 if "telemetry" in hooks_config:
                     existing["telemetry"] = hooks_config["telemetry"]
                 hooks_config = existing
-            except json.JSONDecodeError:
+            except Exception:
                 pass
 
         with open(settings_path, 'w') as f:
             json.dump(hooks_config, f, indent=2)
 
-        debug_print(f"[HOOKS] Configured Gemini CLI hooks in {settings_path}")
+        debug_print(f"[HOOKS] Configured Gemini CLI hooks in {settings_path} (shared hook, env-var routing)")
         debug_print(f"[HOOKS] State file: {self._state_file}")
 
     def _cleanup_hooks_config(self):
-        """Clean up hooks configuration"""
-        settings_path = os.path.join(self.working_dir, ".gemini", "settings.json")
+        """Clean up hooks configuration with ref-counting.
+
+        Only restores settings.json when the last active agent in this workspace exits.
+        Each agent always cleans up its own state directory.
+        """
         gemini_dir = os.path.join(self.working_dir, ".gemini")
+        settings_path = os.path.join(gemini_dir, "settings.json")
+        active_path = os.path.join(gemini_dir, _AGENTVIZ_ACTIVE_FILENAME)
+        backup_path = os.path.join(gemini_dir, _AGENTVIZ_BACKUP_FILENAME)
+        hook_script_path = os.path.join(gemini_dir, _AGENTVIZ_HOOK_FILENAME)
+        lock_path = active_path + ".lock"
 
+        is_last = False
         try:
-            if self._gemini_settings_backup is not None:
-                with open(settings_path, 'w') as f:
-                    f.write(self._gemini_settings_backup)
-                debug_print("[HOOKS] Restored original .gemini/settings.json")
-            elif os.path.exists(settings_path):
-                os.remove(settings_path)
-                debug_print("[HOOKS] Removed temporary .gemini/settings.json")
-                # Remove .gemini dir if we created it and it's empty
-                if not self._gemini_dir_existed and os.path.exists(gemini_dir) and not os.listdir(gemini_dir):
-                    os.rmdir(gemini_dir)
+            with open(lock_path, 'w') as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    if os.path.exists(active_path):
+                        with open(active_path) as f:
+                            data = json.load(f)
+                        data["agents"] = [a for a in data.get("agents", []) if a != self.agent_id]
+                        if not data["agents"]:
+                            os.remove(active_path)
+                            is_last = True
+                        else:
+                            with open(active_path, 'w') as f:
+                                json.dump(data, f)
+                    else:
+                        is_last = True
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
         except Exception as e:
-            debug_print(f"[HOOKS] Cleanup warning: {e}")
+            debug_print(f"[HOOKS] Cleanup registry warning: {e}")
+            is_last = True
 
-        # Clean up state directory
+        if is_last:
+            try:
+                if os.path.exists(backup_path):
+                    with open(backup_path) as f:
+                        original = f.read()
+                    with open(settings_path, 'w') as f:
+                        f.write(original)
+                    os.remove(backup_path)
+                    debug_print("[HOOKS] Restored original .gemini/settings.json")
+                elif os.path.exists(settings_path):
+                    os.remove(settings_path)
+                    debug_print("[HOOKS] Removed temporary .gemini/settings.json")
+                    if not self._gemini_dir_existed and os.path.exists(gemini_dir) and not os.listdir(gemini_dir):
+                        os.rmdir(gemini_dir)
+                if os.path.exists(hook_script_path):
+                    try:
+                        os.remove(hook_script_path)
+                    except Exception:
+                        pass
+                if os.path.exists(lock_path):
+                    try:
+                        os.remove(lock_path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                debug_print(f"[HOOKS] Cleanup warning: {e}")
+
+        # Always clean up own state directory
         if self._state_dir and os.path.exists(self._state_dir):
             try:
                 shutil.rmtree(self._state_dir)
                 debug_print(f"[HOOKS] Removed state directory: {self._state_dir}")
             except Exception as e:
                 debug_print(f"[HOOKS] Could not remove state dir: {e}")
+
+    def _inject_state_env_vars(self):
+        """Inject per-agent state routing env vars into self.env.
+
+        Must be called after self.env is initialised (i.e. after
+        self.env = os.environ.copy()) so the vars are not clobbered.
+        """
+        if not getattr(self, 'env', None):
+            return
+        if self._state_file:
+            self.env['AGENTVIZ_STATE_FILE'] = self._state_file
+        self.env['AGENTVIZ_AGENT_ID'] = self.agent_id
 
     async def _monitor_state_file(self):
         """Monitor the state file for hook events and emit state changes"""
@@ -735,6 +769,10 @@ if __name__ == "__main__":
                 self.env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = f"http://127.0.0.1:{self.port}/v1/metrics"
             else:
                 self.env = os.environ.copy()
+
+            # Inject per-agent state routing so the shared hook script writes to
+            # THIS agent's state file (not another agent's in the same workspace).
+            self._inject_state_env_vars()
 
             # Start state file monitor
             self.state_monitor_task = asyncio.create_task(self._monitor_state_file())

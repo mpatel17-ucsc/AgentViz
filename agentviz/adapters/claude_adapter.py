@@ -1,10 +1,16 @@
 import asyncio
+import fcntl
 import os
 import json
 import sys
 import tempfile
 import shutil
 from pathlib import Path
+
+# Per-workspace coordination files (shared across agents in the same workspace)
+_AGENTVIZ_HOOK_FILENAME = "agentviz-hook.py"
+_AGENTVIZ_ACTIVE_FILENAME = ".agentviz-active.json"
+_AGENTVIZ_BACKUP_FILENAME = ".agentviz-settings-backup.json"
 
 from .base import BaseAdapter, AGENTVIZ_DEBUG, debug_print, register_agent_activity, is_path_within_dir
 from ..utils import find_free_port
@@ -70,60 +76,60 @@ class ClaudeAdapter(BaseAdapter):
 
     def _get_state_hook_script(self):
         """
-        Generate Python hook script for reliable JSON output.
+        Generate shared Python hook script that routes events via AGENTVIZ_STATE_FILE env var.
+
+        Using env-var routing allows multiple agents in the same workspace to each
+        receive only their own hook events, even though they share one settings.local.json.
 
         IMPORTANT: Claude Code hooks require PURE JSON output on stdout.
-        Bash scripts can have shell initialization output that corrupts JSON parsing.
-        Python scripts provide reliable, clean JSON output.
         """
-        return f'''#!/usr/bin/env python3
-# Claude Code state hook for agentviz
-# This script is called by Claude Code hooks to track state changes
+        return '''#!/usr/bin/env python3
+# Claude Code state hook for agentviz (shared across all instances in this workspace)
+# Routes events to the correct agent via AGENTVIZ_STATE_FILE environment variable.
 import sys
 import json
 import time
+import os
 
 def main():
     event = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 
-    # Read any stdin data (hook input JSON) - but we mainly care about the event name
+    # Per-agent routing: each agent sets AGENTVIZ_STATE_FILE in its own environment.
+    state_file = os.environ.get("AGENTVIZ_STATE_FILE", "")
+    if not state_file:
+        sys.exit(0)
+
     stdin_data = None
     try:
         if not sys.stdin.isatty():
             stdin_data = sys.stdin.read().strip()
-    except:
+    except Exception:
         pass
 
-    # Build event record
-    data = {{
+    data = {
         "event": event,
         "timestamp": int(time.time() * 1000),
-        "agent_id": "{self.agent_id}"
-    }}
+        "agent_id": os.environ.get("AGENTVIZ_AGENT_ID", "unknown"),
+    }
 
-    # If we got stdin data, try to extract useful fields
     if stdin_data:
         try:
             hook_input = json.loads(stdin_data)
-            # Extract tool name if this is a tool-related hook
             if "tool_name" in hook_input:
                 data["tool_name"] = hook_input["tool_name"]
-            # Extract notification type if this is a notification
             if "notification_type" in hook_input:
                 data["notification_type"] = hook_input["notification_type"]
         except json.JSONDecodeError:
             pass
 
-    # Append to state file (atomic write)
     try:
-        with open("{self._state_file}", "a") as f:
+        with open(state_file, "a") as f:
             f.write(json.dumps(data) + "\\n")
             f.flush()
     except IOError as e:
-        sys.stderr.write(f"Failed to write state: {{e}}\\n")
+        sys.stderr.write(f"Failed to write state: {e}\\n")
         sys.exit(1)
 
-    # Exit 0 = success, allow the action to proceed
     sys.exit(0)
 
 if __name__ == "__main__":
@@ -133,160 +139,184 @@ if __name__ == "__main__":
     def _setup_hooks_config(self):
         """
         Set up Claude Code hooks configuration for state tracking.
-        Creates temporary settings that configure hooks to report state changes.
+
+        Uses a shared hook script at a fixed workspace path (.claude/agentviz-hook.py)
+        with per-agent routing via the AGENTVIZ_STATE_FILE environment variable.
+        This prevents multiple agents in the same workspace from overwriting each
+        other's hook configurations.
         """
         # Create a unique state directory for this agent instance
         self._state_dir = tempfile.mkdtemp(prefix=f"agentviz-claude-{self.agent_id}-")
         self._state_file = os.path.join(self._state_dir, "state.jsonl")
-
-        # Create the state file
         Path(self._state_file).touch()
 
-        # Create hook script (Python for reliable JSON output)
-        # Using .py extension for clarity
-        hook_script_path = os.path.join(self._state_dir, "state-hook.py")
+        claude_dir = os.path.join(self.working_dir, ".claude")
+        self._claude_dir_existed = os.path.exists(claude_dir)
+        os.makedirs(claude_dir, exist_ok=True)
+
+        # Write shared hook script at a stable workspace-local path.
+        hook_script_path = os.path.join(claude_dir, _AGENTVIZ_HOOK_FILENAME)
         with open(hook_script_path, 'w') as f:
             f.write(self._get_state_hook_script())
         os.chmod(hook_script_path, 0o755)
+        debug_print(f"[HOOKS] Wrote shared Claude hook script: {hook_script_path}")
 
-        debug_print(f"[HOOKS] Created hook script: {hook_script_path}")
+        # --- Ref-counted workspace registration ---
+        project_settings_path = os.path.join(claude_dir, "settings.local.json")
+        active_path = os.path.join(claude_dir, _AGENTVIZ_ACTIVE_FILENAME)
+        backup_path = os.path.join(claude_dir, _AGENTVIZ_BACKUP_FILENAME)
+        lock_path = active_path + ".lock"
 
-        # Build hooks configuration
-        # See: https://code.claude.com/docs/en/hooks
-        #
-        # Hook lifecycle order:
-        # 1. SessionStart - session begins
-        # 2. UserPromptSubmit - user submits prompt (THINKING state)
-        # 3. PreToolUse - before tool executes (WORKING state)
-        # 4. PermissionRequest - permission dialog shown (WAITING_FOR_INPUT)
-        # 5. PostToolUse - after tool completes
-        # 6. Stop - Claude finishes responding (READY state)
-        # 7. SessionEnd - session terminates (STOPPED state)
-        #
-        # Note: Use python3 explicitly to ensure the Python script runs correctly
+        is_first = False
+        try:
+            with open(lock_path, 'w') as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    if os.path.exists(active_path):
+                        with open(active_path) as f:
+                            data = json.load(f)
+                    else:
+                        data = {"agents": []}
+                    is_first = len(data["agents"]) == 0
+                    if self.agent_id not in data["agents"]:
+                        data["agents"].append(self.agent_id)
+                    with open(active_path, 'w') as f:
+                        json.dump(data, f)
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+        except Exception as e:
+            debug_print(f"[HOOKS] Registry warning: {e}")
+            is_first = True
+
+        # Only the first agent in this workspace saves the original settings.local.json.
+        if is_first and os.path.exists(project_settings_path) and not os.path.exists(backup_path):
+            try:
+                with open(project_settings_path) as f:
+                    original = f.read()
+                if _AGENTVIZ_HOOK_FILENAME not in original:
+                    with open(backup_path, 'w') as f:
+                        f.write(original)
+                    self._claude_settings_backup = original
+                    debug_print(f"[HOOKS] Backed up original settings.local.json")
+            except Exception as e:
+                debug_print(f"[HOOKS] Backup warning: {e}")
+
+        # Build hooks config pointing to the shared hook script
         hooks_config = {
             "hooks": {
-                "SessionStart": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} session_start"
-                    }]
-                }],
-                "Stop": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} stop"
-                    }]
-                }],
-                "PreToolUse": [{
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} pre_tool_use"
-                    }]
-                }],
-                "PostToolUse": [{
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} post_tool_use"
-                    }]
-                }],
-                # PermissionRequest fires when user sees permission dialog
-                # This is the PRIMARY hook for detecting "waiting for input"
-                # See: https://code.claude.com/docs/en/hooks#permissionrequest
-                "PermissionRequest": [{
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} permission_request"
-                    }]
-                }],
-                # Notification hooks for different notification types
-                # Matchers: permission_prompt, idle_prompt, auth_success, elicitation_dialog
+                "SessionStart": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} session_start"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} stop"}]}],
+                "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": f"python3 {hook_script_path} pre_tool_use"}]}],
+                "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": f"python3 {hook_script_path} post_tool_use"}]}],
+                "PermissionRequest": [{"matcher": "*", "hooks": [{"type": "command", "command": f"python3 {hook_script_path} permission_request"}]}],
                 "Notification": [
-                    {
-                        "matcher": "idle_prompt",
-                        "hooks": [{
-                            "type": "command",
-                            "command": f"python3 {hook_script_path} idle_prompt"
-                        }]
-                    },
-                    {
-                        "matcher": "permission_prompt",
-                        "hooks": [{
-                            "type": "command",
-                            "command": f"python3 {hook_script_path} permission_prompt"
-                        }]
-                    }
+                    {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": f"python3 {hook_script_path} idle_prompt"}]},
+                    {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": f"python3 {hook_script_path} permission_prompt"}]},
                 ],
-                "UserPromptSubmit": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} user_prompt_submit"
-                    }]
-                }],
-                "SessionEnd": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": f"python3 {hook_script_path} session_end"
-                    }]
-                }]
+                "UserPromptSubmit": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} user_prompt_submit"}]}],
+                "SessionEnd": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} session_end"}]}],
             }
         }
 
-        # Write hooks config to project-local settings
-        project_settings_dir = os.path.join(self.working_dir, ".claude")
-        project_settings_path = os.path.join(project_settings_dir, "settings.local.json")
-
-        os.makedirs(project_settings_dir, exist_ok=True)
-
-        # Backup existing settings if present
-        if os.path.exists(project_settings_path):
-            with open(project_settings_path, 'r') as f:
-                self._claude_settings_backup = f.read()
-            # Merge with existing settings
+        # Merge with the original user settings if we have a backup
+        if os.path.exists(backup_path):
             try:
-                existing = json.loads(self._claude_settings_backup)
+                with open(backup_path) as f:
+                    existing = json.loads(f.read())
                 existing["hooks"] = hooks_config["hooks"]
                 hooks_config = existing
-            except json.JSONDecodeError:
+            except Exception:
                 pass
 
         with open(project_settings_path, 'w') as f:
             json.dump(hooks_config, f, indent=2)
 
-        debug_print(f"[HOOKS] Configured Claude Code hooks in {project_settings_path}")
+        debug_print(f"[HOOKS] Configured Claude Code hooks in {project_settings_path} (shared hook, env-var routing)")
         debug_print(f"[HOOKS] State file: {self._state_file}")
 
         return project_settings_path
 
     def _cleanup_hooks_config(self):
-        """Clean up hooks configuration"""
-        project_settings_path = os.path.join(self.working_dir, ".claude", "settings.local.json")
+        """Clean up hooks configuration with ref-counting.
 
+        Only restores settings.local.json when the last active agent in this workspace exits.
+        Each agent always cleans up its own state directory.
+        """
+        claude_dir = os.path.join(self.working_dir, ".claude")
+        project_settings_path = os.path.join(claude_dir, "settings.local.json")
+        active_path = os.path.join(claude_dir, _AGENTVIZ_ACTIVE_FILENAME)
+        backup_path = os.path.join(claude_dir, _AGENTVIZ_BACKUP_FILENAME)
+        hook_script_path = os.path.join(claude_dir, _AGENTVIZ_HOOK_FILENAME)
+        lock_path = active_path + ".lock"
+
+        is_last = False
         try:
-            if self._claude_settings_backup is not None:
-                with open(project_settings_path, 'w') as f:
-                    f.write(self._claude_settings_backup)
-                debug_print("[HOOKS] Restored original settings.local.json")
-            elif os.path.exists(project_settings_path):
-                os.remove(project_settings_path)
-                debug_print("[HOOKS] Removed temporary settings.local.json")
-                # Remove .claude dir if empty
-                claude_dir = os.path.join(self.working_dir, ".claude")
-                if os.path.exists(claude_dir) and not os.listdir(claude_dir):
-                    os.rmdir(claude_dir)
+            with open(lock_path, 'w') as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    if os.path.exists(active_path):
+                        with open(active_path) as f:
+                            data = json.load(f)
+                        data["agents"] = [a for a in data.get("agents", []) if a != self.agent_id]
+                        if not data["agents"]:
+                            os.remove(active_path)
+                            is_last = True
+                        else:
+                            with open(active_path, 'w') as f:
+                                json.dump(data, f)
+                    else:
+                        is_last = True
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
         except Exception as e:
-            debug_print(f"[HOOKS] Cleanup warning: {e}")
+            debug_print(f"[HOOKS] Cleanup registry warning: {e}")
+            is_last = True
 
-        # Clean up state directory
+        if is_last:
+            try:
+                if os.path.exists(backup_path):
+                    with open(backup_path) as f:
+                        original = f.read()
+                    with open(project_settings_path, 'w') as f:
+                        f.write(original)
+                    os.remove(backup_path)
+                    debug_print("[HOOKS] Restored original settings.local.json")
+                elif os.path.exists(project_settings_path):
+                    os.remove(project_settings_path)
+                    debug_print("[HOOKS] Removed temporary settings.local.json")
+                    if not getattr(self, '_claude_dir_existed', True) and os.path.exists(claude_dir) and not os.listdir(claude_dir):
+                        os.rmdir(claude_dir)
+                if os.path.exists(hook_script_path):
+                    try:
+                        os.remove(hook_script_path)
+                    except Exception:
+                        pass
+                if os.path.exists(lock_path):
+                    try:
+                        os.remove(lock_path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                debug_print(f"[HOOKS] Cleanup warning: {e}")
+
+        # Always clean up own state directory
         if self._state_dir and os.path.exists(self._state_dir):
             try:
                 shutil.rmtree(self._state_dir)
                 debug_print(f"[HOOKS] Removed state directory: {self._state_dir}")
             except Exception as e:
                 debug_print(f"[HOOKS] Could not remove state dir: {e}")
+
+    def _inject_state_env_vars(self):
+        """Inject per-agent state routing env vars into self.env.
+
+        Must be called after self.env is initialised so the vars are not clobbered.
+        """
+        if not getattr(self, 'env', None):
+            return
+        if self._state_file:
+            self.env['AGENTVIZ_STATE_FILE'] = self._state_file
+        self.env['AGENTVIZ_AGENT_ID'] = self.agent_id
 
     async def _monitor_state_file(self):
         """Monitor the state file for hook events and emit state changes"""
@@ -715,6 +745,10 @@ if __name__ == "__main__":
                 self.env["OTEL_LOGS_EXPORTER"] = "otlp"
             else:
                 self.env = os.environ.copy()
+
+            # Inject per-agent state routing so the shared hook script writes to
+            # THIS agent's state file (not another agent's in the same workspace).
+            self._inject_state_env_vars()
 
             # Start state file monitor
             self.state_monitor_task = asyncio.create_task(self._monitor_state_file())
