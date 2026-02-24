@@ -436,7 +436,7 @@ def run_reliability_test():
 # ---------------------------------------------------------------------------
 def run_tmux_lifecycle_test():
     """
-    Launch synthetic agent with --tmux-mode, verify tmux session + ttyd URL
+    Launch synthetic agent with --tmux-start, verify tmux session + ttyd URL
     are created and cleaned up after agent completes. 5 attempts.
     """
     print("\n--- Tmux Lifecycle Test ---")
@@ -492,7 +492,7 @@ def run_tmux_lifecycle_test():
         env["SYNTH_PERMISSION_PROMPTS"] = "0"
 
         proc = subprocess.Popen(
-            [AGENTVIZ_RUN_CMD, "run", "--tmux-mode", "-w", workspace, "-i", agent_id,
+            [AGENTVIZ_RUN_CMD, "run", "--tmux-start", "-w", workspace, "-i", agent_id,
              "synthetic", "python3", SYNTH_AGENT_SCRIPT],
             env=env,
             stdout=subprocess.DEVNULL,
@@ -637,7 +637,7 @@ def run_tmux_scalability_test():
             env["SYNTH_PERMISSION_PROMPTS"] = "0"
 
             p = subprocess.Popen(
-                [AGENTVIZ_RUN_CMD, "run", "--tmux-mode", "-w", ws, "-i", agent_id,
+                [AGENTVIZ_RUN_CMD, "run", "--tmux-start", "-w", ws, "-i", agent_id,
                  "synthetic", "python3", SYNTH_AGENT_SCRIPT],
                 env=env,
                 stdout=subprocess.DEVNULL,
@@ -752,7 +752,7 @@ def run_tmux_send_keys_test():
     env["SYNTH_PERMISSION_PROMPTS"] = "3"
 
     proc = subprocess.Popen(
-        [AGENTVIZ_RUN_CMD, "run", "--tmux-mode", "-w", workspace, "-i", agent_id,
+        [AGENTVIZ_RUN_CMD, "run", "--tmux-start", "-w", workspace, "-i", agent_id,
          "synthetic", "python3", SYNTH_AGENT_SCRIPT],
         env=env,
         stdout=subprocess.DEVNULL,
@@ -853,7 +853,7 @@ def run_tmux_resilience_test():
         env["SYNTH_PERMISSION_PROMPTS"] = "0"
 
         proc = subprocess.Popen(
-            [AGENTVIZ_RUN_CMD, "run", "--tmux-mode", "-w", workspace, "-i", agent_id,
+            [AGENTVIZ_RUN_CMD, "run", "--tmux-start", "-w", workspace, "-i", agent_id,
              "synthetic", "python3", SYNTH_AGENT_SCRIPT],
             env=env,
             stdout=subprocess.DEVNULL,

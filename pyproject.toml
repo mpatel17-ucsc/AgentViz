@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentviz"
+version = "0.1.0"
+description = "Local dashboard for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, etc.)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Backend server
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "pydantic>=2.0.0",
+    "python-socketio>=5.10.0",
+    "websockets",
+    # Monitor / Adapters
+    "psutil>=5.9.0",
+    "watchdog>=3.0.0",
+    "toml>=0.10.0",
+    "requests>=2.28.0",
+    "opentelemetry-proto>=1.0.0",
+]
+
+[project.scripts]
+agentviz = "agentviz.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentviz"]

@@ -610,6 +610,8 @@ finally:
         if not shutil.which("ttyd"):
             raise RuntimeError("ttyd not found. Install with: brew install ttyd")
 
+        tmux_history_limit = "20000"
+
         # 1. Clean stale hooks from previous interrupted runs
         self._clean_stale_hooks()
 
@@ -644,6 +646,37 @@ finally:
                 raise RuntimeError(f"Failed to create tmux session: {result.stderr.strip()}")
             print(f"[TMUX] Created session '{self.session_name}' running: {cmd_str}", file=sys.stderr)
 
+            # Increase scrollback for the AgentViz tmux window so dashboard terminals
+            # can scroll further back into prior agent output.
+            history_res = subprocess.run(
+                ["tmux", "set-option", "-t", self.session_name, "history-limit", tmux_history_limit],
+                capture_output=True,
+                text=True,
+            )
+            if history_res.returncode != 0:
+                print(
+                    f"[TMUX] Warning: could not set history-limit={tmux_history_limit} "
+                    f"for session '{self.session_name}': {history_res.stderr.strip()}",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"[TMUX] Set history-limit={tmux_history_limit} for session '{self.session_name}'", file=sys.stderr)
+
+            # Enable tmux mouse mode so wheel scrolling in ttyd can scroll the tmux pane/copy-mode.
+            mouse_res = subprocess.run(
+                ["tmux", "set-option", "-t", self.session_name, "mouse", "on"],
+                capture_output=True,
+                text=True,
+            )
+            if mouse_res.returncode != 0:
+                print(
+                    f"[TMUX] Warning: could not enable mouse mode for session '{self.session_name}': "
+                    f"{mouse_res.stderr.strip()}",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"[TMUX] Enabled mouse mode for session '{self.session_name}'", file=sys.stderr)
+
             # 3a. Mirror tmux pane IO into adapter's existing parsers
             self._setup_tmux_io_capture()
             self._tmux_output_task = asyncio.create_task(self._tail_tmux_output())
@@ -663,7 +696,12 @@ finally:
             #    keystrokes from the dashboard and feed _ingest_stdin_bytes().
             ttyd_wrapper = self._create_ttyd_wrapper_script()
             self.ttyd_port = find_free_port()
-            ttyd_cmd = ["ttyd", "--port", str(self.ttyd_port), "--writable"]
+            ttyd_cmd = [
+                "ttyd",
+                "--port", str(self.ttyd_port),
+                "--writable",
+                "-t", f"scrollback={tmux_history_limit}",
+            ]
             if self.remote_host:
                 ttyd_cmd += ["--interface", "0.0.0.0"]
             ttyd_cmd += ["python3", ttyd_wrapper]

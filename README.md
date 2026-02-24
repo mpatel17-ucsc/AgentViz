@@ -2,6 +2,35 @@
 
 AgentViz is a local dashboard + event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, etc.) while they run in a workspace.
 
+## Quick Install (one command)
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/CSE247B_VisualizationCodingAgents/main/scripts/install.sh | sh -s -- ~/agentviz
+```
+
+This single command:
+- Installs `uv` if not already present
+- Clones the repo to `~/agentviz` (or any directory you pass)
+- Creates a project-local Python venv and installs all dependencies
+- Installs `npm` frontend dependencies if `node` is on PATH
+- Places the `agentviz` binary in `~/agentviz/bin/`
+
+Then add the bin directory to your PATH (printed by the installer):
+
+```bash
+export PATH="$HOME/agentviz/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
+```
+
+Verify:
+
+```bash
+agentviz --help
+```
+
+> **Note:** `tmux` and `ttyd` are system tools the installer does not manage — install them separately (`brew install tmux ttyd` on macOS) if you plan to use `--tmux-start`.
+
+---
+
 It includes:
 
 - A Python backend (`FastAPI` + `Socket.IO`) on port `8787`
@@ -19,15 +48,15 @@ It includes:
 - `tmux` + `ttyd` web terminal access for each agent session
 - Remote dashboard + web terminal access (Tailscale/LAN)
 
-## Prerequisites
+## Manual Setup (alternative to Quick Install)
 
 ### System tools
 
-- `python` 3.10+ (project appears to work with 3.13 in your local venv)
+- `python` 3.10+
 - `node` + `npm` (for the frontend)
-- `tmux` (required for `--tmux-mode`)
-- `ttyd` (required for `--tmux-mode`)
-- `git` (recommended; some file change detection uses it when available)
+- `tmux` (required for `--tmux-start`)
+- `ttyd` (required for `--tmux-start`)
+- `git`
 
 macOS (Homebrew) example:
 
@@ -47,7 +76,13 @@ AgentViz does not install these CLIs for you.
 
 ## Python Setup (Backend + AgentViz CLI)
 
-From the project root:
+**Preferred — using `uv` (fastest, reproducible):**
+
+```bash
+uv sync          # creates .venv, installs all deps + agentviz CLI
+```
+
+**Alternative — using pip:**
 
 ```bash
 python3 -m venv venv
@@ -56,11 +91,6 @@ pip install --upgrade pip
 pip install -r requirements.txt
 pip install -e .
 ```
-
-Why both installs:
-
-- `pip install -r requirements.txt` installs backend + adapter dependencies
-- `pip install -e .` installs the `agentviz` command in editable mode
 
 ## Frontend Setup
 
@@ -149,7 +179,7 @@ Required:
 Options:
 
 - `-i, --id <agent-id>`: Custom AgentViz ID (default is `<agent-type>-<pid>`)
-- `--tmux-mode`: Run the agent in a `tmux` session and expose a `ttyd` web terminal
+- `--tmux-start`: Run the agent in a `tmux` session and expose a `ttyd` web terminal
 - `--remote <hostname-or-ip>`: Hostname/IP used in generated remote `ttyd` URLs (also makes `ttyd` listen on `0.0.0.0`)
 
 Agent type aliases supported:
@@ -200,7 +230,7 @@ Gemini:
 ```bash
 cd <PROJECT_ROOT>
 source venv/bin/activate
-agentviz run -w <WORKSPACE> --tmux-mode --remote <TAILSCALE_IP_OR_HOSTNAME> gemini-cli /path/to/gemini
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> gemini-cli /path/to/gemini
 ```
 
 Claude Code:
@@ -208,7 +238,7 @@ Claude Code:
 ```bash
 cd <PROJECT_ROOT>
 source venv/bin/activate
-agentviz run -w <WORKSPACE> --tmux-mode --remote <TAILSCALE_IP_OR_HOSTNAME> claude-code claude
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> claude-code claude
 ```
 
 Codex CLI:
@@ -216,7 +246,7 @@ Codex CLI:
 ```bash
 cd <PROJECT_ROOT>
 source venv/bin/activate
-agentviz run -w <WORKSPACE> --tmux-mode --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
 ```
 
 If the agent executable is already on `PATH`, you can use the command name directly. If not, use the full path (as in your Gemini example).
@@ -264,19 +294,19 @@ Notes:
 Gemini with absolute binary path:
 
 ```bash
-agentviz run -w <WORKSPACE> --tmux-mode --remote <TAILSCALE_IP_OR_HOSTNAME> gemini-cli /opt/homebrew/bin/gemini
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> gemini-cli /opt/homebrew/bin/gemini
 ```
 
 Claude Code:
 
 ```bash
-agentviz run -w <WORKSPACE> --tmux-mode --remote <TAILSCALE_IP_OR_HOSTNAME> claude-code claude
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> claude-code claude
 ```
 
 Codex CLI:
 
 ```bash
-agentviz run -w <WORKSPACE> --tmux-mode --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
 ```
 
 ## Troubleshooting
@@ -286,7 +316,7 @@ agentviz run -w <WORKSPACE> --tmux-mode --remote <TAILSCALE_IP_OR_HOSTNAME> code
 
 - `tmux not found` / `ttyd not found`
   - Install both system tools (`brew install tmux ttyd`)
-  - `--tmux-mode` requires both
+  - `--tmux-start` requires both
 
 - Phone can open frontend but dashboard shows disconnected
   - Make sure backend was started with `agentviz server --remote`

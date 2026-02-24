@@ -71,7 +71,7 @@ def run(args):
         print("Usage: agentviz run -w <workspace> <agent_type> <command...>", file=sys.stderr)
         sys.exit(1)
 
-    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace, tmux_mode=getattr(args, 'tmux_mode', False), remote_host=getattr(args, 'remote', None))
+    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace, tmux_mode=getattr(args, 'tmux_start', False), remote_host=getattr(args, 'remote', None))
     interrupted = False
     error_occurred = False
 
@@ -176,7 +176,7 @@ def main():
     parser_run = subparsers.add_parser("run", help="Run a coding agent and monitor it.")
     parser_run.add_argument("-w", required=True, help="Workspace directory for the agent.")
     parser_run.add_argument("-i", "--id", default=None, help="Custom agent ID (default: <agent_type>-<pid>).")
-    parser_run.add_argument("--tmux-mode", action="store_true", help="Run agent inside a tmux session with a TTYD web terminal.")
+    parser_run.add_argument("--tmux-start", action="store_true", help="Run agent inside a tmux session with a TTYD web terminal.")
     parser_run.add_argument("--remote", metavar="HOSTNAME", default=None, help="Tailscale/LAN hostname for remote access (e.g. 'manav-macbook'). Makes ttyd URLs accessible from other devices.")
     parser_run.add_argument("agent", help="The agent to run (e.g., 'gemini-cli', 'claude-code').")
     parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="The command to execute the agent.")
