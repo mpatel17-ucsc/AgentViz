@@ -6,6 +6,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import PauseCircleIcon from '@mui/icons-material/PauseCircle';
 import CallSplitIcon from '@mui/icons-material/CallSplit';
+import ReplayIcon from '@mui/icons-material/Replay';
 import { Agent, getAgentBadge, getColumnConfig } from '../types/agent';
 import { formatRelativeTime, formatTime } from '../utils/sorting';
 import AgentTypeIcon from './AgentTypeIcon';
@@ -182,6 +183,21 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging, socket 
             <CallSplitIcon sx={{ fontSize: 13 }} />
           </IconButton>
         </Tooltip>
+        {agent.state === 'error' && (
+          <Tooltip title="Retry agent" arrow>
+            <IconButton
+              size="small"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                socket.emit('control_retry', { agent_id: agent.id });
+              }}
+              sx={{ p: 0.25, color: '#ef4444', '&:hover': { color: '#fca5a5' } }}
+            >
+              <ReplayIcon sx={{ fontSize: 13 }} />
+            </IconButton>
+          </Tooltip>
+        )}
         <StateIndicator state={agent.state} />
       </Box>
 

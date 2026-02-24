@@ -139,6 +139,26 @@ export function getAgentBadge(agent: Agent, userLastSeen: number | null): BadgeT
   return null;
 }
 
+// Section types for organizing ready/idle agents
+export interface Section {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export const DEFAULT_SECTION_ID = 'default';
+
+export const SECTION_COLORS = [
+  '#8b5cf6', // violet
+  '#ec4899', // pink
+  '#06b6d4', // cyan
+  '#e879f9', // fuchsia
+  '#a78bfa', // lavender
+  '#2dd4bf', // teal
+  '#c084fc', // soft purple
+  '#67e8f9', // sky
+];
+
 // Column definitions
 export const COLUMNS: ColumnConfig[] = [
   { id: 'ready', title: 'READY / IDLE', color: '#6b7280', bgColor: 'rgba(107, 114, 128, 0.1)' },

@@ -18,9 +18,10 @@ import io from 'socket.io-client';
 
 interface KanbanBoardProps {
   socket: ReturnType<typeof io>;
+  hideReady?: boolean;
 }
 
-export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
+export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket, hideReady }) => {
   const { agents, getAgentsByState, filters } = useAgentStore();
   const [activeId, setActiveId] = React.useState<string | null>(null);
 
@@ -110,6 +111,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
     setActiveId(null);
   };
 
+  const visibleColumns = hideReady ? COLUMNS.filter((c) => c.id !== 'ready') : COLUMNS;
+
   const activeAgent = activeId ? agents[activeId] : null;
   return (
     <DndContext
@@ -135,7 +138,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
           },
         }}
       >
-        {COLUMNS.map((column) => (
+        {visibleColumns.map((column) => (
           <KanbanColumn
             key={column.id}
             config={column}

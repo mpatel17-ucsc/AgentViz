@@ -15,12 +15,15 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import DeleteIcon from '@mui/icons-material/Delete';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import AddIcon from '@mui/icons-material/Add';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import { useAgentStore } from './hooks/useAgentStore';
 import { AgentEvent, Agent } from './types/agent';
 import KanbanBoard from './components/KanbanBoard';
 import FilterBar from './components/FilterBar';
 import DetailDrawer from './components/DetailDrawer';
 import LaunchAgentDialog from './components/LaunchAgentDialog';
+import SectionsPanel from './components/SectionsPanel';
 
 // Socket connection — uses current hostname so it works from localhost AND remote (Tailscale/LAN)
 const BACKEND_URL = `http://${window.location.hostname}:8787`;
@@ -85,6 +88,7 @@ function App() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [transitionsOpen, setTransitionsOpen] = useState(true);
 
   // Count agents needing attention
   const needsAttentionCount = Object.values(agents).filter((a) => a.needs_attention).length;
@@ -219,6 +223,12 @@ function App() {
               </IconButton>
             </Tooltip>
 
+            <Tooltip title={transitionsOpen ? 'Hide Transitions panel' : 'Show Transitions panel'}>
+              <IconButton color="inherit" onClick={() => setTransitionsOpen((o) => !o)} size="small" sx={{ mr: 0.5 }}>
+                {transitionsOpen ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+              </IconButton>
+            </Tooltip>
+
             <Tooltip title="Clear All Agents">
               <IconButton color="inherit" onClick={handleClearAll} size="small">
                 <DeleteIcon />
@@ -236,9 +246,26 @@ function App() {
         {/* Filter Bar */}
         <FilterBar />
 
-        {/* Kanban Board */}
-        <Box sx={{ flex: 1, overflow: 'hidden' }}>
-          <KanbanBoard socket={socket} />
+        {/* Main content: Sections (left) + Transitions (right, collapsible) */}
+        <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          {/* Sections panel */}
+          <Box sx={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
+            <SectionsPanel socket={socket} />
+          </Box>
+
+          {/* Transitions panel */}
+          {transitionsOpen && (
+            <Box
+              sx={{
+                width: 620,
+                flexShrink: 0,
+                borderLeft: '1px solid rgba(255,255,255,0.1)',
+                overflow: 'hidden',
+              }}
+            >
+              <KanbanBoard socket={socket} hideReady />
+            </Box>
+          )}
         </Box>
 
         {/* Detail Drawer */}
