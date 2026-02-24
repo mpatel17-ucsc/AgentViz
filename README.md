@@ -314,8 +314,8 @@ agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> cod
 ```
 
 ## Experiments
-![AgentViz Dashboard](images/P50 (ms), P95 (ms), Mean (ms) and Peak RSS (MB).png)
-![AgentViz Agent Detail View](images/Peak RSS (MB) vs. Tool.png)
+![AgentViz Dashboard](images/Latency.png)
+![AgentViz Agent Detail View](images/Memory.png)
 
 ## Troubleshooting
 
