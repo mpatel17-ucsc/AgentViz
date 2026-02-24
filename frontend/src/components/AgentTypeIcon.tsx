@@ -3,6 +3,7 @@ import { Box, Tooltip } from '@mui/material';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import CodeIcon from '@mui/icons-material/Code';
+import TerminalIcon from '@mui/icons-material/Terminal';
 
 interface AgentTypeIconProps {
   type: string;
@@ -30,6 +31,11 @@ const AGENT_CONFIGS: Record<string, { icon: React.ReactNode; color: string; labe
     icon: <CodeIcon />,
     color: '#10a37f', // OpenAI green
     label: 'Codex',
+  },
+  'terminal': {
+    icon: <TerminalIcon />,
+    color: '#6b7280',
+    label: 'Terminal',
   },
 };
 

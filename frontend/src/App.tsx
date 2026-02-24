@@ -14,11 +14,13 @@ import {
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import DeleteIcon from '@mui/icons-material/Delete';
 import NotificationsIcon from '@mui/icons-material/Notifications';
+import AddIcon from '@mui/icons-material/Add';
 import { useAgentStore } from './hooks/useAgentStore';
 import { AgentEvent, Agent } from './types/agent';
 import KanbanBoard from './components/KanbanBoard';
 import FilterBar from './components/FilterBar';
 import DetailDrawer from './components/DetailDrawer';
+import LaunchAgentDialog from './components/LaunchAgentDialog';
 
 // Socket connection — uses current hostname so it works from localhost AND remote (Tailscale/LAN)
 const BACKEND_URL = `http://${window.location.hostname}:8787`;
@@ -82,6 +84,7 @@ function App() {
 
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
+  const [launchOpen, setLaunchOpen] = useState(false);
 
   // Count agents needing attention
   const needsAttentionCount = Object.values(agents).filter((a) => a.needs_attention).length;
@@ -210,6 +213,12 @@ function App() {
               </Tooltip>
             )}
 
+            <Tooltip title="Launch Agent">
+              <IconButton color="inherit" onClick={() => setLaunchOpen(true)} size="small" sx={{ mr: 0.5 }}>
+                <AddIcon />
+              </IconButton>
+            </Tooltip>
+
             <Tooltip title="Clear All Agents">
               <IconButton color="inherit" onClick={handleClearAll} size="small">
                 <DeleteIcon />
@@ -217,6 +226,12 @@ function App() {
             </Tooltip>
           </Toolbar>
         </AppBar>
+
+        <LaunchAgentDialog
+          open={launchOpen}
+          onClose={() => setLaunchOpen(false)}
+          socket={socket}
+        />
 
         {/* Filter Bar */}
         <FilterBar />

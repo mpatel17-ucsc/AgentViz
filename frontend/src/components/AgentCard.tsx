@@ -1,20 +1,24 @@
-import React from 'react';
-import { Box, Paper, Typography, CircularProgress } from '@mui/material';
+import React, { useState } from 'react';
+import { Box, Paper, Typography, CircularProgress, IconButton, Tooltip } from '@mui/material';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import PauseCircleIcon from '@mui/icons-material/PauseCircle';
+import CallSplitIcon from '@mui/icons-material/CallSplit';
 import { Agent, getAgentBadge, getColumnConfig } from '../types/agent';
 import { formatRelativeTime, formatTime } from '../utils/sorting';
 import AgentTypeIcon from './AgentTypeIcon';
 import AgentCardBadge from './AgentCardBadge';
 import SubprocessTree from './SubprocessTree';
 import { useAgentStore } from '../hooks/useAgentStore';
+import LaunchAgentDialog from './LaunchAgentDialog';
+import io from 'socket.io-client';
 
 interface AgentCardProps {
   agent: Agent;
   isDragging?: boolean;
+  socket: ReturnType<typeof io>;
 }
 
 const StateIndicator: React.FC<{ state: Agent['state'] }> = ({ state }) => {
@@ -48,10 +52,11 @@ const StateIndicator: React.FC<{ state: Agent['state'] }> = ({ state }) => {
   }
 };
 
-export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging }) => {
+export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging, socket }) => {
   const { userLastSeen, selectAgent } = useAgentStore();
   const config = getColumnConfig(agent.state);
   const badge = getAgentBadge(agent, userLastSeen);
+  const [forkOpen, setForkOpen] = useState(false);
 
   const {
     attributes,
@@ -164,6 +169,19 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging }) => {
             {agent.type}
           </Typography>
         </Box>
+        <Tooltip title="Fork (new agent, same workspace)" arrow>
+          <IconButton
+            size="small"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setForkOpen(true);
+            }}
+            sx={{ p: 0.25, color: 'text.disabled', '&:hover': { color: 'text.secondary' } }}
+          >
+            <CallSplitIcon sx={{ fontSize: 13 }} />
+          </IconButton>
+        </Tooltip>
         <StateIndicator state={agent.state} />
       </Box>
 
@@ -254,6 +272,15 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging }) => {
             : formatRelativeTime(agent.last_event_at)}
         </Typography>
       </Box>
+
+      {/* Fork dialog — rendered outside the DnD drag listeners */}
+      <LaunchAgentDialog
+        open={forkOpen}
+        onClose={() => setForkOpen(false)}
+        socket={socket}
+        prefillWorkspace={agent.workspace}
+        prefillType={agent.type}
+      />
     </Paper>
   );
 };

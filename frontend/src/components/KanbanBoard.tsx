@@ -140,12 +140,13 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
             key={column.id}
             config={column}
             agents={columnAgents[column.id]}
+            socket={socket}
           />
         ))}
       </Box>
 
       <DragOverlay>
-        {activeAgent ? <AgentCard agent={activeAgent} isDragging /> : null}
+        {activeAgent ? <AgentCard agent={activeAgent} isDragging socket={socket} /> : null}
       </DragOverlay>
     </DndContext>
   );
