@@ -2,6 +2,11 @@
 
 AgentViz is a local dashboard + event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, etc.) while they run in a workspace.
 
+
+![AgentViz Dashboard](images/AgentViz_Dashboard.png)
+![AgentViz Agent Detail View](images/AgentViz_AgentDetail.png)
+![AgentViz Tmux Control](images/AgentViz_Tmux_session.png)
+
 ## Quick Install (one command)
 
 ```bash
