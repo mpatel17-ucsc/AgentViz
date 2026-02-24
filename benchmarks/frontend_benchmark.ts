@@ -417,7 +417,7 @@ async function benchVirtualKeypad(browser: Browser): Promise<any> {
     SYNTH_PERMISSION_PROMPTS: '2',
   };
   const proc = spawn(AGENTVIZ_CMD, [
-    'run', '--tmux-mode', '-w', ws, '-i', agentId,
+    'run', '--tmux-start', '-w', ws, '-i', agentId,
     'synthetic', 'python3', SYNTH_SCRIPT,
   ], { env, stdio: 'ignore', detached: false });
 
