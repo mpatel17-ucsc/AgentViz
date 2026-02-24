@@ -2,6 +2,10 @@
 
 AgentViz is a local dashboard + event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, etc.) while they run in a workspace.
 
+
+![AgentViz Dashboard](images/AgentViz_Dashboard.png)
+![AgentViz Agent Detail View](images/AgentViz_AgentDetail.png)
+
 ## Quick Install (one command)
 
 ```bash
@@ -308,6 +312,43 @@ Codex CLI:
 ```bash
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
 ```
+
+## Experiments
+
+Benchmarks were run on a complex coding task scenario (5 trials each) comparing AgentViz against two terminal-native agent dashboards: [TmuxCC](https://github.com/felixbrock/tmuxcc) and [Agent of Empires (AoE)](https://github.com/fellowapp/aoe).
+
+### Methodology
+
+A synthetic `unified_agent.py` script replays a fixed sequence of agent states (Processing → AwaitingApproval → Idle → Completed) with realistic timing. Each dashboard monitors the same fake agent via its native mechanism:
+
+- **AgentViz**: push event — time from `AWAITING_APPROVAL` in the agent log to `waiting_for_input` Socket.IO event arrival
+- **TmuxCC**: poll at 500 ms — `tmux capture-pane` until `Pending approval` appears in TmuxCC's TUI pane
+- **AoE**: poll at 20 ms — `aoe status --json` until `waiting > 0`
+
+Tmux `send-keys` / `capture-pane` round-trip baseline (p50 = 8.2 ms, p95 = 9.8 ms) was measured separately to isolate terminal I/O overhead from dashboard overhead.
+
+### Approval-Detection Latency
+
+| Dashboard | p50 (ms) | p95 (ms) | Mean (ms) | Mechanism |
+|-----------|----------|----------|-----------|-----------|
+| **AgentViz** | **27.7** | **44.6** | **27.7** | Push (Socket.IO) |
+| AoE | 61.5 | 69.6 | 60.7 | Poll 20 ms |
+| TmuxCC | 121.6 | 388.2 | 184.7 | Poll 500 ms |
+
+AgentViz detects approval prompts ~2× faster than AoE and ~7× faster than TmuxCC at the median. All three tools achieved 100% state-coverage accuracy (AwaitingApproval, Processing, Idle, Completed all detected across all trials).
+
+### Memory Overhead
+
+| Tool | Peak RSS (MB) | Notes |
+|------|--------------|-------|
+| **AgentViz server** | 36.9 | Persistent daemon — always resident while monitoring |
+| AoE | 7.9 | TUI — binary init + session query cost shown |
+| TmuxCC | 7.0 | TUI — binary init cost shown |
+
+AgentViz runs a persistent FastAPI + Socket.IO server (~37 MB), whereas TmuxCC and AoE are TUI binaries that are only active when opened in a terminal. The memory trade-off enables push-based detection and the web dashboard.
+
+![Latency comparison](images/Latency.png)
+![Memory comparison](images/Memory.png)
 
 ## Troubleshooting
 
