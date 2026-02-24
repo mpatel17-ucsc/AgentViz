@@ -1,0 +1,245 @@
+{
+  "timestamp": "2026-02-24T00:43:41.741080",
+  "server_url": "http://localhost:8787",
+  "backend": {
+    "latency": {
+      "status": "ok",
+      "events_count": 30,
+      "latency_ms": {
+        "p50": 1.32,
+        "p95": 2.53,
+        "p99": 2.83,
+        "max": 2.9,
+        "mean": 1.49
+      }
+    },
+    "throughput": {
+      "status": "ok",
+      "events_count": 410,
+      "duration_sec": 0.34,
+      "events_per_sec": 1208.42
+    },
+    "scalability": {
+      "status": "ok",
+      "levels": [
+        {
+          "agents": 1,
+          "total_time_sec": 2.18,
+          "per_agent_time_sec": 2.18,
+          "cpu_percent": 4.8,
+          "memory_delta_mb": -123.4
+        },
+        {
+          "agents": 2,
+          "total_time_sec": 2.25,
+          "per_agent_time_sec": 1.12,
+          "cpu_percent": 15.5,
+          "memory_delta_mb": 168.8
+        },
+        {
+          "agents": 4,
+          "total_time_sec": 2.34,
+          "per_agent_time_sec": 0.59,
+          "cpu_percent": 8.1,
+          "memory_delta_mb": -8.5
+        },
+        {
+          "agents": 8,
+          "total_time_sec": 3.52,
+          "per_agent_time_sec": 0.44,
+          "cpu_percent": 0.0,
+          "memory_delta_mb": -181.7
+        }
+      ]
+    },
+    "reliability": {
+      "status": "ok",
+      "attempts": 10,
+      "successes": 10,
+      "success_rate_percent": 100.0
+    },
+    "tmux": {
+      "lifecycle": {
+        "status": "ok",
+        "attempts": 5,
+        "successes": 0,
+        "success_rate_percent": 0.0,
+        "startup_time_ms": {
+          "mean": 423.49,
+          "p50": 428.57
+        }
+      },
+      "scalability": {
+        "status": "ok",
+        "levels": [
+          {
+            "agents": 1,
+            "total_time_sec": 0.96,
+            "per_agent_time_sec": 0.96,
+            "ttyd_urls_received": 1,
+            "ttyd_urls_verified": 0
+          },
+          {
+            "agents": 2,
+            "total_time_sec": 1.04,
+            "per_agent_time_sec": 0.52,
+            "ttyd_urls_received": 2,
+            "ttyd_urls_verified": 0
+          },
+          {
+            "agents": 4,
+            "total_time_sec": 2.28,
+            "per_agent_time_sec": 0.57,
+            "ttyd_urls_received": 4,
+            "ttyd_urls_verified": 1
+          },
+          {
+            "agents": 8,
+            "total_time_sec": 5.17,
+            "per_agent_time_sec": 0.65,
+            "ttyd_urls_received": 8,
+            "ttyd_urls_verified": 4
+          }
+        ]
+      },
+      "send_keys": {
+        "status": "no_transitions",
+        "transitions": 0
+      },
+      "resilience": {
+        "status": "ok",
+        "attempts": 5,
+        "successes": 5,
+        "success_rate_percent": 100.0,
+        "orphaned_sessions": 0
+      }
+    }
+  },
+  "frontend": {
+    "timestamp": "2026-02-24T08:45:21.589Z",
+    "socket_to_store": {
+      "status": "ok",
+      "latency_ms": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0,
+        "mean": 0,
+        "count": 0
+      }
+    },
+    "store_to_render": {
+      "status": "ok",
+      "latency_ms": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0,
+        "mean": 0,
+        "count": 0
+      }
+    },
+    "kanban_at_scale": {
+      "status": "ok",
+      "levels": [
+        {
+          "agents": 1,
+          "render_count": 0,
+          "render_interval_ms": {
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0,
+            "mean": 0,
+            "count": 0
+          }
+        },
+        {
+          "agents": 2,
+          "render_count": 0,
+          "render_interval_ms": {
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0,
+            "mean": 0,
+            "count": 0
+          }
+        },
+        {
+          "agents": 4,
+          "render_count": 0,
+          "render_interval_ms": {
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0,
+            "mean": 0,
+            "count": 0
+          }
+        },
+        {
+          "agents": 8,
+          "render_count": 0,
+          "render_interval_ms": {
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0,
+            "mean": 0,
+            "count": 0
+          }
+        }
+      ]
+    },
+    "agent_card_renders": {
+      "status": "ok",
+      "agents_tracked": 0,
+      "renders_per_agent": {
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "by_agent": {}
+    },
+    "e2e_pipeline": {
+      "status": "ok",
+      "latency_ms": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0,
+        "mean": 0,
+        "count": 0
+      }
+    },
+    "mobile": {
+      "rendering": {
+        "status": "ok",
+        "render_latency_ms": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0,
+          "count": 0
+        },
+        "drawer_latency_ms": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0,
+          "mean": 0,
+          "count": 0
+        }
+      },
+      "virtual_keypad": {
+        "status": "ok",
+        "ttyd_received": true,
+        "keypad_visible": false,
+        "button_tap_success_rate": 0
+      }
+    },
+    "status": "ok"
+  }
+}

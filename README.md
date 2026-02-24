@@ -5,7 +5,7 @@ AgentViz is a local dashboard + event pipeline for visualizing coding agents (Ge
 
 ![AgentViz Dashboard](images/AgentViz_Dashboard.png)
 ![AgentViz Agent Detail View](images/AgentViz_AgentDetail.png)
-
+![AgentViz Tmux Session](images/AgentViz_Tmux_session.png)
 ## Quick Install (one command)
 
 ```bash

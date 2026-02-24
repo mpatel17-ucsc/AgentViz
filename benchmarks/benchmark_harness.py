@@ -485,8 +485,8 @@ def run_tmux_lifecycle_test():
 
         env = os.environ.copy()
         env["SYNTH_AUTO_INPUT"] = "1"
-        env["SYNTH_TOOL_CYCLES"] = "5"
-        env["SYNTH_WORK_TIME"] = "0.1"
+        env["SYNTH_TOOL_CYCLES"] = "15"  # enough cycles to keep session alive during checks
+        env["SYNTH_WORK_TIME"] = "0.3"   # ~9s total work — outlasts ttyd startup + checks
         env["SYNTH_THINK_TIME"] = "0.1"
         env["SYNTH_OUTPUT_KB"] = "1"
         env["SYNTH_PERMISSION_PROMPTS"] = "0"
@@ -504,6 +504,10 @@ def run_tmux_lifecycle_test():
         deadline = time.time() + 15
         while tmux_session is None and time.time() < deadline:
             time.sleep(0.2)
+
+        # Give ttyd time to bind its port after Popen (startup race condition)
+        if tmux_session is not None:
+            time.sleep(1.0)
 
         # Verify tmux session exists
         tmux_ok = False
