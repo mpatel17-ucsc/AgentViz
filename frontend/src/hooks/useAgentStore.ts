@@ -28,6 +28,7 @@ interface AgentStore {
   removeSection: (id: string) => void;
   renameSection: (id: string, name: string) => void;
   setAgentSection: (agentId: string, sectionId: string) => void;
+  loadSections: (sections: Section[], agentSectionMap: Record<string, string>) => void;
 
   // Computed
   getAgentsByState: (state: AgentState) => Agent[];
@@ -422,6 +423,11 @@ export const useAgentStore = create<AgentStore>()(
           }
           return { agentSectionMap: newMap };
         });
+      },
+
+      // Load sections state received from backend (no socket emit)
+      loadSections: (sections: Section[], agentSectionMap: Record<string, string>) => {
+        set({ sections, agentSectionMap });
       },
 
       // Get agents by state (sorted by attention + recency)

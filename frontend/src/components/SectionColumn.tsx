@@ -32,10 +32,18 @@ export const SectionColumn: React.FC<SectionColumnProps> = ({ section, agents, s
     const trimmed = editName.trim();
     if (trimmed && trimmed !== section.name) {
       renameSection(section.id, trimmed);
+      const { sections, agentSectionMap } = useAgentStore.getState();
+      socket.emit('update_sections', { sections, agentSectionMap });
     } else {
       setEditName(section.name);
     }
     setEditing(false);
+  };
+
+  const handleRemoveSection = () => {
+    removeSection(section.id);
+    const { sections, agentSectionMap } = useAgentStore.getState();
+    socket.emit('update_sections', { sections, agentSectionMap });
   };
 
   const handleEditKeyDown = (e: React.KeyboardEvent) => {
@@ -161,7 +169,7 @@ export const SectionColumn: React.FC<SectionColumnProps> = ({ section, agents, s
                       <IconButton
                         size="small"
                         disabled={!canDelete}
-                        onClick={() => removeSection(section.id)}
+                        onClick={handleRemoveSection}
                         sx={{
                           p: 0.25,
                           color: 'text.disabled',

@@ -127,6 +127,8 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({ socket }) => {
     }
 
     setAgentSection(agentId, targetSectionId);
+    const { sections, agentSectionMap } = useAgentStore.getState();
+    socket.emit('update_sections', { sections, agentSectionMap });
   };
 
   const handleDragCancel = () => {
@@ -137,6 +139,8 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({ socket }) => {
     const name = newSectionName.trim();
     if (name) {
       addSection(name);
+      const { sections, agentSectionMap } = useAgentStore.getState();
+      socket.emit('update_sections', { sections, agentSectionMap });
     }
     setNewSectionName('');
     setAddingSection(false);

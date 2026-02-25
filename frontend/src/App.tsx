@@ -18,7 +18,7 @@ import AddIcon from '@mui/icons-material/Add';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import { useAgentStore } from './hooks/useAgentStore';
-import { AgentEvent, Agent } from './types/agent';
+import { AgentEvent, Agent, Section } from './types/agent';
 import KanbanBoard from './components/KanbanBoard';
 import FilterBar from './components/FilterBar';
 import DetailDrawer from './components/DetailDrawer';
@@ -83,6 +83,7 @@ function App() {
     addEvent,
     clearAgents,
     updateUserLastSeen,
+    loadSections,
   } = useAgentStore();
 
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -133,6 +134,13 @@ function App() {
       console.log('[Socket] State change:', data.agent_id, data.old_state, '->', data.new_state);
     });
 
+    // Sections sync — backend sends this on connect and when another client updates sections
+    socket.on('sections_state', (data: { sections: Section[]; agentSectionMap: Record<string, string> }) => {
+      if (data.sections) {
+        loadSections(data.sections, data.agentSectionMap || {});
+      }
+    });
+
     // Cleanup
     return () => {
       socket.off('connect');
@@ -140,8 +148,9 @@ function App() {
       socket.off('agent_state');
       socket.off('agent_event');
       socket.off('agent_state_change');
+      socket.off('sections_state');
     };
-  }, [setAgent, addEvent]);
+  }, [setAgent, addEvent, loadSections]);
 
   // Update user last seen on visibility change
   useEffect(() => {

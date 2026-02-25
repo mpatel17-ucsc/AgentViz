@@ -32,6 +32,16 @@ interface DetailDrawerProps {
   events: AgentEvent[];
 }
 
+/**
+ * Rewrite localhost/127.0.0.1 in a ttyd URL to the actual server hostname.
+ * This makes terminal iframes work from any device on the network, not just
+ * the machine running the backend.
+ */
+function resolveTerminalUrl(ttydUrl: string): string {
+  const host = window.location.hostname;
+  return ttydUrl.replace(/^(https?:\/\/)(localhost|127\.0\.0\.1)/, `$1${host}`);
+}
+
 // Event type display mapping
 const eventTypeMapping: Record<string, { displayName: string; color: string }> = {
   agent_started: { displayName: 'Agent Started', color: 'success' },
@@ -384,7 +394,7 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
           </Typography>
           <IconButton
             size="small"
-            onClick={() => window.open(agent.ttyd_url!, '_blank')}
+            onClick={() => window.open(resolveTerminalUrl(agent.ttyd_url!), '_blank')}
             title="Open in new tab"
           >
             <OpenInNewIcon sx={{ fontSize: 18 }} />
@@ -395,7 +405,7 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         </DialogTitle>
         <DialogContent sx={{ p: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <iframe
-            src={agent.ttyd_url}
+            src={resolveTerminalUrl(agent.ttyd_url!)}
             style={{
               width: '100%',
               flex: 1,

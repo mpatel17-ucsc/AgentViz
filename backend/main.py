@@ -79,6 +79,12 @@ agent_events_store: Dict[str, List[dict]] = {}
 # Structure: { agent_id: ttyd_pid }
 terminal_processes: Dict[str, int] = {}
 
+# Sections/tabs state synced across all connected clients
+sections_store: dict = {
+    "sections": [{"id": "default", "name": "General", "color": "#94a3b8"}],
+    "agentSectionMap": {},
+}
+
 
 def find_free_port() -> int:
     with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
@@ -382,12 +388,28 @@ async def connect(sid, environ):
         for event in events[-100:]:
             historical_event = {**event, "historical": True}
             await sio.emit('agent_event', historical_event, to=sid)
+    # Send current sections/tabs state
+    await sio.emit('sections_state', sections_store, to=sid)
     print(f"Sent state for {len(agent_store)} agents to {sid}")
 
 
 @sio.event
 async def disconnect(sid):
     print(f"Socket.IO client disconnected: {sid}")
+
+
+@sio.event
+async def update_sections(sid, data: dict):
+    """Sync sections/tabs state from a client; broadcast to all other clients"""
+    sections = data.get("sections")
+    agent_section_map = data.get("agentSectionMap")
+    if sections is not None:
+        sections_store["sections"] = sections
+    if agent_section_map is not None:
+        sections_store["agentSectionMap"] = agent_section_map
+    # Broadcast to all OTHER clients (sender already has the correct local state)
+    await sio.emit("sections_state", sections_store, skip_sid=sid)
+    print(f"[BACKEND] Sections updated by {sid}: {len(sections_store['sections'])} sections")
 
 
 @sio.event
