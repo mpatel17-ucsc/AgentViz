@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Agent, AgentState, Filters, AgentEvent, Subprocess, BackendState, mapBackendStateToFrontend } from '../types/agent';
+import { Agent, AgentState, Filters, AgentEvent, Subprocess, BackendState, mapBackendStateToFrontend, Section, DEFAULT_SECTION_ID, SECTION_COLORS } from '../types/agent';
 
 interface AgentStore {
   // State
@@ -9,6 +9,8 @@ interface AgentStore {
   drawerOpen: boolean;
   filters: Filters;
   userLastSeen: number;
+  sections: Section[];
+  agentSectionMap: Record<string, string>;
 
   // Actions
   setAgent: (agent: Agent) => void;
@@ -22,6 +24,11 @@ interface AgentStore {
   clearAgents: () => void;
   deleteAgent: (agentId: string) => void;
   updateUserLastSeen: () => void;
+  addSection: (name: string) => string;
+  removeSection: (id: string) => void;
+  renameSection: (id: string, name: string) => void;
+  setAgentSection: (agentId: string, sectionId: string) => void;
+  loadSections: (sections: Section[], agentSectionMap: Record<string, string>) => void;
 
   // Computed
   getAgentsByState: (state: AgentState) => Agent[];
@@ -45,6 +52,8 @@ export const useAgentStore = create<AgentStore>()(
       drawerOpen: false,
       filters: DEFAULT_FILTERS,
       userLastSeen: Date.now(),
+      sections: [{ id: DEFAULT_SECTION_ID, name: 'General', color: '#94a3b8' }],
+      agentSectionMap: {},
 
       // Set or update an agent
       setAgent: (agent: Agent) => {
@@ -368,6 +377,59 @@ export const useAgentStore = create<AgentStore>()(
         set({ userLastSeen: Date.now() });
       },
 
+      // Add a new section; returns its id
+      addSection: (name: string) => {
+        const id = `section-${Date.now()}`;
+        set((state) => {
+          const usedColors = state.sections.map((s) => s.color);
+          const nextColor = SECTION_COLORS.find((c) => !usedColors.includes(c)) || SECTION_COLORS[state.sections.length % SECTION_COLORS.length];
+          return { sections: [...state.sections, { id, name, color: nextColor }] };
+        });
+        return id;
+      },
+
+      // Remove a section; agents in it move to default
+      removeSection: (id: string) => {
+        if (id === DEFAULT_SECTION_ID) return;
+        set((state) => {
+          const newMap = { ...state.agentSectionMap };
+          Object.keys(newMap).forEach((agentId) => {
+            if (newMap[agentId] === id) {
+              delete newMap[agentId];
+            }
+          });
+          return {
+            sections: state.sections.filter((s) => s.id !== id),
+            agentSectionMap: newMap,
+          };
+        });
+      },
+
+      // Rename a section
+      renameSection: (id: string, name: string) => {
+        set((state) => ({
+          sections: state.sections.map((s) => (s.id === id ? { ...s, name } : s)),
+        }));
+      },
+
+      // Assign an agent to a section
+      setAgentSection: (agentId: string, sectionId: string) => {
+        set((state) => {
+          const newMap = { ...state.agentSectionMap };
+          if (sectionId === DEFAULT_SECTION_ID) {
+            delete newMap[agentId];
+          } else {
+            newMap[agentId] = sectionId;
+          }
+          return { agentSectionMap: newMap };
+        });
+      },
+
+      // Load sections state received from backend (no socket emit)
+      loadSections: (sections: Section[], agentSectionMap: Record<string, string>) => {
+        set({ sections, agentSectionMap });
+      },
+
       // Get agents by state (sorted by attention + recency)
       getAgentsByState: (state: AgentState) => {
         const { agents, filters } = get();
@@ -421,6 +483,8 @@ export const useAgentStore = create<AgentStore>()(
       partialize: (state) => ({
         filters: state.filters,
         userLastSeen: state.userLastSeen,
+        sections: state.sections,
+        agentSectionMap: state.agentSectionMap,
       }),
     }
   )

@@ -18,9 +18,10 @@ import io from 'socket.io-client';
 
 interface KanbanBoardProps {
   socket: ReturnType<typeof io>;
+  hideReady?: boolean;
 }
 
-export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
+export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket, hideReady }) => {
   const { agents, getAgentsByState, filters } = useAgentStore();
   const [activeId, setActiveId] = React.useState<string | null>(null);
 
@@ -110,6 +111,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
     setActiveId(null);
   };
 
+  const visibleColumns = hideReady ? COLUMNS.filter((c) => c.id !== 'ready') : COLUMNS;
+
   const activeAgent = activeId ? agents[activeId] : null;
   return (
     <DndContext
@@ -123,7 +126,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
         sx={{
           display: 'flex',
           gap: 2,
-          p: 2,
+          pl: 2,
+          pt: 2,
+          pb: 2,
           height: '100%',
           overflowX: 'auto',
           '&::-webkit-scrollbar': {
@@ -135,17 +140,20 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket }) => {
           },
         }}
       >
-        {COLUMNS.map((column) => (
+        {visibleColumns.map((column) => (
           <KanbanColumn
             key={column.id}
             config={column}
             agents={columnAgents[column.id]}
+            socket={socket}
           />
         ))}
+        {/* Spacer so the last column's right edge isn't clipped by the scroll container on mobile */}
+        <Box sx={{ flexShrink: 0, width: 8 }} />
       </Box>
 
       <DragOverlay>
-        {activeAgent ? <AgentCard agent={activeAgent} isDragging /> : null}
+        {activeAgent ? <AgentCard agent={activeAgent} isDragging socket={socket} /> : null}
       </DragOverlay>
     </DndContext>
   );

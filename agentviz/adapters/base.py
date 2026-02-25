@@ -944,8 +944,11 @@ class BaseAdapter:
         # in activity_monitor_loop(), not by parsing terminal output.
         # This is more reliable as OTEL events are the source of truth.
 
-        # Only trigger waiting_for_input for EXPLICIT prompts, not general output
-        is_explicit_prompt = any(kw in lower_output for kw in approval_keywords)
+        # Only trigger waiting_for_input for EXPLICIT prompts, not general output.
+        # Skip screen-based detection entirely for hook-based adapters (e.g. Gemini):
+        # the hooks are the source of truth and screen detection causes spurious
+        # waiting_for_input events that snap the state back after the user accepts.
+        is_explicit_prompt = (not self._use_hooks_for_state) and any(kw in lower_output for kw in approval_keywords)
         if is_explicit_prompt:
             # Normalize prompt for comparison
             cleaned_prompt = ' '.join(output_str.strip().split()).lower()[:250]

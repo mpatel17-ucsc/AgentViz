@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 from enum import Enum
 from pydantic import BaseModel
 import time
+import socket as _sock
 
 app = FastAPI()
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -74,6 +75,22 @@ agent_store: Dict[str, dict] = {}
 
 # Structure: { agent_id: [events...] }
 agent_events_store: Dict[str, List[dict]] = {}
+
+# Structure: { agent_id: ttyd_pid }
+terminal_processes: Dict[str, int] = {}
+
+# Sections/tabs state synced across all connected clients
+sections_store: dict = {
+    "sections": [{"id": "default", "name": "General", "color": "#94a3b8"}],
+    "agentSectionMap": {},
+}
+
+
+def find_free_port() -> int:
+    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
 
 
 
@@ -371,12 +388,28 @@ async def connect(sid, environ):
         for event in events[-100:]:
             historical_event = {**event, "historical": True}
             await sio.emit('agent_event', historical_event, to=sid)
+    # Send current sections/tabs state
+    await sio.emit('sections_state', sections_store, to=sid)
     print(f"Sent state for {len(agent_store)} agents to {sid}")
 
 
 @sio.event
 async def disconnect(sid):
     print(f"Socket.IO client disconnected: {sid}")
+
+
+@sio.event
+async def update_sections(sid, data: dict):
+    """Sync sections/tabs state from a client; broadcast to all other clients"""
+    sections = data.get("sections")
+    agent_section_map = data.get("agentSectionMap")
+    if sections is not None:
+        sections_store["sections"] = sections
+    if agent_section_map is not None:
+        sections_store["agentSectionMap"] = agent_section_map
+    # Broadcast to all OTHER clients (sender already has the correct local state)
+    await sio.emit("sections_state", sections_store, skip_sid=sid)
+    print(f"[BACKEND] Sections updated by {sid}: {len(sections_store['sections'])} sections")
 
 
 @sio.event
@@ -583,6 +616,134 @@ async def control_send_keys(sid, data: dict):
                         f"[BACKEND] control_send_keys mirror failed for {agent_id} "
                         f"(path={input_path}, key={key}): {e}"
                     )
+
+
+@sio.event
+async def launch_agent(sid, data: dict):
+    """Launch a new agent subprocess via agentviz run"""
+    agent_type = data.get('agent_type', '')
+    workspace = data.get('workspace', '')
+    command = data.get('command', '')
+
+    if not workspace:
+        await sio.emit('launch_result', {'success': False, 'error': 'workspace is required'}, to=sid)
+        return
+
+    if not os.path.isdir(workspace):
+        await sio.emit('launch_result', {'success': False, 'error': f'workspace does not exist: {workspace}'}, to=sid)
+        return
+
+    valid_types = ('codex', 'gemini-cli', 'claude-code')
+    if agent_type not in valid_types:
+        await sio.emit('launch_result', {'success': False, 'error': f'unknown agent_type: {agent_type}'}, to=sid)
+        return
+
+    agentviz_bin = shutil.which('agentviz')
+    if not agentviz_bin:
+        await sio.emit('launch_result', {'success': False, 'error': 'agentviz binary not found in PATH'}, to=sid)
+        return
+
+    default_commands = {
+        'codex': 'codex',
+        'gemini-cli': 'gemini',
+        'claude-code': 'claude',
+    }
+    agent_command = command or default_commands[agent_type]
+
+    try:
+        cmd = [agentviz_bin, 'run', '--tmux-start', '-w', workspace, agent_type, agent_command]
+        print(f"[BACKEND] Launching agent: {' '.join(cmd)}")
+        subprocess.Popen(
+            cmd,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        await sio.emit('launch_result', {'success': True}, to=sid)
+        print(f"[BACKEND] Launched {agent_type} in {workspace}")
+    except Exception as e:
+        print(f"[BACKEND] launch_agent error: {e}")
+        await sio.emit('launch_result', {'success': False, 'error': str(e)}, to=sid)
+
+
+@sio.event
+async def launch_terminal(sid, data: dict):
+    """Launch an empty tmux terminal with ttyd and add it to the dashboard"""
+    workspace = data.get('workspace', '')
+
+    if not workspace:
+        await sio.emit('launch_result', {'success': False, 'error': 'workspace is required'}, to=sid)
+        return
+
+    if not os.path.isdir(workspace):
+        await sio.emit('launch_result', {'success': False, 'error': f'workspace does not exist: {workspace}'}, to=sid)
+        return
+
+    tmux_bin = shutil.which('tmux')
+    ttyd_bin = shutil.which('ttyd')
+    if not tmux_bin:
+        await sio.emit('launch_result', {'success': False, 'error': 'tmux not found in PATH'}, to=sid)
+        return
+    if not ttyd_bin:
+        await sio.emit('launch_result', {'success': False, 'error': 'ttyd not found in PATH'}, to=sid)
+        return
+
+    ts = int(time.time())
+    agent_id = f"terminal-{ts}"
+    session_name = f"agentviz-terminal-{ts}"
+
+    try:
+        # Create tmux session
+        subprocess.run(
+            [tmux_bin, 'new-session', '-d', '-s', session_name, '-c', workspace],
+            check=True,
+        )
+
+        # Find free port and start ttyd
+        port = find_free_port()
+        ttyd_proc = subprocess.Popen(
+            [ttyd_bin, '--port', str(port), '--writable', tmux_bin, 'attach-session', '-t', session_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        terminal_processes[agent_id] = ttyd_proc.pid
+
+        ttyd_url = f"http://localhost:{port}"
+
+        # Create agent entry directly
+        now = time.time()
+        agent_store[agent_id] = {
+            "id": agent_id,
+            "type": "terminal",
+            "state": AgentState.READY.value,
+            "workspace": workspace,
+            "branch": None,
+            "repo": extract_repo_name(workspace),
+            "task_summary": None,
+            "pid": None,
+            "needs_attention": False,
+            "last_event_at": now,
+            "last_message": "Terminal ready",
+            "error_message": None,
+            "completed_at": None,
+            "started_at": now,
+            "subprocesses": {},
+            "first_seen": now,
+            "user_last_seen": None,
+            "task_started": False,
+            "ttyd_url": ttyd_url,
+            "tmux_session": session_name,
+            "tmux_input_path": None,
+        }
+        agent_events_store[agent_id] = []
+
+        # Broadcast to all clients
+        await sio.emit('agent_state', agent_store[agent_id])
+        await sio.emit('launch_result', {'success': True, 'agent_id': agent_id}, to=sid)
+        print(f"[BACKEND] Launched terminal {agent_id} on port {port} (session={session_name})")
+    except Exception as e:
+        print(f"[BACKEND] launch_terminal error: {e}")
+        await sio.emit('launch_result', {'success': False, 'error': str(e)}, to=sid)
 
 
 # ============================================

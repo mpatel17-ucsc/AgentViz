@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import io from 'socket.io-client';
 import {
   AppBar,
@@ -14,11 +14,16 @@ import {
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import DeleteIcon from '@mui/icons-material/Delete';
 import NotificationsIcon from '@mui/icons-material/Notifications';
+import AddIcon from '@mui/icons-material/Add';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import { useAgentStore } from './hooks/useAgentStore';
-import { AgentEvent, Agent } from './types/agent';
+import { AgentEvent, Agent, Section } from './types/agent';
 import KanbanBoard from './components/KanbanBoard';
 import FilterBar from './components/FilterBar';
 import DetailDrawer from './components/DetailDrawer';
+import LaunchAgentDialog from './components/LaunchAgentDialog';
+import SectionsPanel from './components/SectionsPanel';
 
 // Socket connection — uses current hostname so it works from localhost AND remote (Tailscale/LAN)
 const BACKEND_URL = `http://${window.location.hostname}:8787`;
@@ -78,10 +83,41 @@ function App() {
     addEvent,
     clearAgents,
     updateUserLastSeen,
+    loadSections,
   } = useAgentStore();
 
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
+  const [launchOpen, setLaunchOpen] = useState(false);
+  const [transitionsOpen, setTransitionsOpen] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(620);
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeRef.current = { startX: e.clientX, startWidth: panelWidth };
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!resizeRef.current) return;
+      // Panel is on the right; dragging handle left widens it, right narrows it
+      const delta = resizeRef.current.startX - ev.clientX;
+      const next = Math.max(260, Math.min(window.innerWidth - 200, resizeRef.current.startWidth + delta));
+      setPanelWidth(next);
+    };
+
+    const onMouseUp = () => {
+      resizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [panelWidth]);
 
   // Count agents needing attention
   const needsAttentionCount = Object.values(agents).filter((a) => a.needs_attention).length;
@@ -126,6 +162,13 @@ function App() {
       console.log('[Socket] State change:', data.agent_id, data.old_state, '->', data.new_state);
     });
 
+    // Sections sync — backend sends this on connect and when another client updates sections
+    socket.on('sections_state', (data: { sections: Section[]; agentSectionMap: Record<string, string> }) => {
+      if (data.sections) {
+        loadSections(data.sections, data.agentSectionMap || {});
+      }
+    });
+
     // Cleanup
     return () => {
       socket.off('connect');
@@ -133,8 +176,9 @@ function App() {
       socket.off('agent_state');
       socket.off('agent_event');
       socket.off('agent_state_change');
+      socket.off('sections_state');
     };
-  }, [setAgent, addEvent]);
+  }, [setAgent, addEvent, loadSections]);
 
   // Update user last seen on visibility change
   useEffect(() => {
@@ -210,6 +254,18 @@ function App() {
               </Tooltip>
             )}
 
+            <Tooltip title="Launch Agent">
+              <IconButton color="inherit" onClick={() => setLaunchOpen(true)} size="small" sx={{ mr: 0.5 }}>
+                <AddIcon />
+              </IconButton>
+            </Tooltip>
+
+            <Tooltip title={transitionsOpen ? 'Hide Transitions panel' : 'Show Transitions panel'}>
+              <IconButton color="inherit" onClick={() => setTransitionsOpen((o) => !o)} size="small" sx={{ mr: 0.5 }}>
+                {transitionsOpen ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+              </IconButton>
+            </Tooltip>
+
             <Tooltip title="Clear All Agents">
               <IconButton color="inherit" onClick={handleClearAll} size="small">
                 <DeleteIcon />
@@ -218,12 +274,53 @@ function App() {
           </Toolbar>
         </AppBar>
 
+        <LaunchAgentDialog
+          open={launchOpen}
+          onClose={() => setLaunchOpen(false)}
+          socket={socket}
+        />
+
         {/* Filter Bar */}
         <FilterBar />
 
-        {/* Kanban Board */}
-        <Box sx={{ flex: 1, overflow: 'hidden' }}>
-          <KanbanBoard socket={socket} />
+        {/* Main content: Sections (left) + Transitions (right, collapsible) */}
+        <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          {/* Sections panel */}
+          <Box sx={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
+            <SectionsPanel socket={socket} />
+          </Box>
+
+          {/* Transitions panel */}
+          {transitionsOpen && (
+            <Box
+              sx={{
+                width: { xs: '100vw', md: panelWidth },
+                flexShrink: 0,
+                display: 'flex',
+                overflow: 'hidden',
+              }}
+            >
+              {/* Drag handle — desktop only */}
+              <Box
+                onMouseDown={handleResizeStart}
+                sx={{
+                  display: { xs: 'none', md: 'flex' },
+                  flexShrink: 0,
+                  width: 4,
+                  cursor: 'col-resize',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  bgcolor: 'rgba(255,255,255,0.07)',
+                  borderLeft: '1px solid rgba(255,255,255,0.1)',
+                  '&:hover': { bgcolor: 'rgba(59,130,246,0.4)' },
+                  transition: 'background-color 0.15s',
+                }}
+              />
+              <Box sx={{ flex: 1, overflow: 'hidden' }}>
+                <KanbanBoard socket={socket} hideReady />
+              </Box>
+            </Box>
+          )}
         </Box>
 
         {/* Detail Drawer */}

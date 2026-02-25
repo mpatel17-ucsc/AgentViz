@@ -5,13 +5,15 @@ import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { motion } from 'framer-motion';
 import { Agent, ColumnConfig } from '../types/agent';
 import AgentCard from './AgentCard';
+import io from 'socket.io-client';
 
 interface KanbanColumnProps {
   config: ColumnConfig;
   agents: Agent[];
+  socket: ReturnType<typeof io>;
 }
 
-export const KanbanColumn: React.FC<KanbanColumnProps> = ({ config, agents }) => {
+export const KanbanColumn: React.FC<KanbanColumnProps> = ({ config, agents, socket }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: config.id,
   });
@@ -140,7 +142,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({ config, agents }) =>
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.2 }}
               >
-                <AgentCard agent={agent} />
+                <AgentCard agent={agent} socket={socket} />
               </motion.div>
             ))
           )}
