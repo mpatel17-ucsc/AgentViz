@@ -235,7 +235,9 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({ socket }) => {
             flex: 1,
             display: 'flex',
             gap: 2,
-            p: 2,
+            pl: 2,
+            pt: 2,
+            pb: 2,
             overflowX: 'auto',
             overflowY: 'hidden',
             alignItems: 'stretch',
@@ -254,6 +256,8 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({ socket }) => {
               socket={socket}
             />
           ))}
+          {/* Spacer so the last section's right edge isn't clipped on mobile */}
+          <Box sx={{ flexShrink: 0, width: 8 }} />
         </Box>
 
         <DragOverlay>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import io from 'socket.io-client';
 import {
   AppBar,
@@ -89,7 +89,35 @@ function App() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
-  const [transitionsOpen, setTransitionsOpen] = useState(true);
+  const [transitionsOpen, setTransitionsOpen] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(620);
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeRef.current = { startX: e.clientX, startWidth: panelWidth };
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!resizeRef.current) return;
+      // Panel is on the right; dragging handle left widens it, right narrows it
+      const delta = resizeRef.current.startX - ev.clientX;
+      const next = Math.max(260, Math.min(window.innerWidth - 200, resizeRef.current.startWidth + delta));
+      setPanelWidth(next);
+    };
+
+    const onMouseUp = () => {
+      resizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [panelWidth]);
 
   // Count agents needing attention
   const needsAttentionCount = Object.values(agents).filter((a) => a.needs_attention).length;
@@ -266,13 +294,31 @@ function App() {
           {transitionsOpen && (
             <Box
               sx={{
-                width: 620,
+                width: { xs: '100vw', md: panelWidth },
                 flexShrink: 0,
-                borderLeft: '1px solid rgba(255,255,255,0.1)',
+                display: 'flex',
                 overflow: 'hidden',
               }}
             >
-              <KanbanBoard socket={socket} hideReady />
+              {/* Drag handle — desktop only */}
+              <Box
+                onMouseDown={handleResizeStart}
+                sx={{
+                  display: { xs: 'none', md: 'flex' },
+                  flexShrink: 0,
+                  width: 4,
+                  cursor: 'col-resize',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  bgcolor: 'rgba(255,255,255,0.07)',
+                  borderLeft: '1px solid rgba(255,255,255,0.1)',
+                  '&:hover': { bgcolor: 'rgba(59,130,246,0.4)' },
+                  transition: 'background-color 0.15s',
+                }}
+              />
+              <Box sx={{ flex: 1, overflow: 'hidden' }}>
+                <KanbanBoard socket={socket} hideReady />
+              </Box>
             </Box>
           )}
         </Box>

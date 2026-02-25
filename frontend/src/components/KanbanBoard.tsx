@@ -126,7 +126,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket, hideReady }) =
         sx={{
           display: 'flex',
           gap: 2,
-          p: 2,
+          pl: 2,
+          pt: 2,
+          pb: 2,
           height: '100%',
           overflowX: 'auto',
           '&::-webkit-scrollbar': {
@@ -146,6 +148,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ socket, hideReady }) =
             socket={socket}
           />
         ))}
+        {/* Spacer so the last column's right edge isn't clipped by the scroll container on mobile */}
+        <Box sx={{ flexShrink: 0, width: 8 }} />
       </Box>
 
       <DragOverlay>
