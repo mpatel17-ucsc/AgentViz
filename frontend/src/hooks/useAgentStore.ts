@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Agent, AgentState, Filters, AgentEvent, Subprocess, BackendState, mapBackendStateToFrontend, Section, DEFAULT_SECTION_ID, SECTION_COLORS } from '../types/agent';
+import { Agent, AgentState, Filters, AgentEvent, Subprocess, Subagent, SubagentAction, BackendState, mapBackendStateToFrontend, Section, DEFAULT_SECTION_ID, SECTION_COLORS } from '../types/agent';
 
 interface AgentStore {
   // State
@@ -149,6 +149,7 @@ export const useAgentStore = create<AgentStore>()(
               completed_at: null,
               started_at: event.timestamp,
               subprocesses: {},
+              subagents: {},
               first_seen: event.timestamp,
               user_last_seen: null,
               ttyd_url: null,
@@ -292,6 +293,61 @@ export const useAgentStore = create<AgentStore>()(
                     ended_at: event.metadata.ended_at || event.timestamp,
                     exit_code: event.metadata.exit_code ?? null,
                   },
+                };
+              }
+              break;
+            case 'subagent_started':
+              if (event.metadata?.subagent_id) {
+                const newSubagent: Subagent = {
+                  id: event.metadata.subagent_id,
+                  agent_type: event.metadata.agent_type || 'unknown',
+                  state: 'running',
+                  started_at: event.metadata.started_at || event.timestamp,
+                  ended_at: null,
+                  last_message: null,
+                  actions: [],
+                };
+                updates.subagents = {
+                  ...(agent.subagents || {}),
+                  [event.metadata.subagent_id]: newSubagent,
+                };
+              }
+              break;
+            case 'subagent_activity':
+              // Skip historical replays — agent_state already carries the accumulated actions
+              if (!isHistorical && event.metadata?.subagent_id) {
+                const existing = (agent.subagents || {})[event.metadata.subagent_id];
+                if (existing) {
+                  const newAction: SubagentAction = {
+                    tool: event.metadata.tool || 'unknown',
+                    detail: event.metadata.detail || '',
+                  };
+                  updates.subagents = {
+                    ...(agent.subagents || {}),
+                    [event.metadata.subagent_id]: {
+                      ...existing,
+                      actions: [...(existing.actions || []), newAction],
+                    },
+                  };
+                }
+              }
+              break;
+            case 'subagent_stopped':
+              if (event.metadata?.subagent_id) {
+                const existing = (agent.subagents || {})[event.metadata.subagent_id];
+                const actions: SubagentAction[] = event.metadata.actions || [];
+                const stoppedSubagent: Subagent = {
+                  id: event.metadata.subagent_id,
+                  agent_type: event.metadata.agent_type || existing?.agent_type || 'unknown',
+                  state: 'completed',
+                  started_at: existing?.started_at || event.timestamp,
+                  ended_at: event.metadata.ended_at || event.timestamp,
+                  last_message: event.metadata.last_message || null,
+                  actions,
+                };
+                updates.subagents = {
+                  ...(agent.subagents || {}),
+                  [event.metadata.subagent_id]: stoppedSubagent,
                 };
               }
               break;

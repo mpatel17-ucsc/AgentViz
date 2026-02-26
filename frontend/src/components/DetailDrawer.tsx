@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Drawer,
   Box,
@@ -6,7 +6,7 @@ import {
   IconButton,
   Button,
   Chip,
-  Divider,
+  CircularProgress,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -20,7 +20,8 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import KeyboardReturnIcon from '@mui/icons-material/KeyboardReturn';
-import { Agent, AgentEvent, getColumnConfig } from '../types/agent';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import { AgentEvent, getColumnConfig } from '../types/agent';
 import { useAgentStore } from '../hooks/useAgentStore';
 import { formatTime, formatRelativeTime } from '../utils/sorting';
 import AgentTypeIcon from './AgentTypeIcon';
@@ -59,6 +60,8 @@ const eventTypeMapping: Record<string, { displayName: string; color: string }> =
   cost_update: { displayName: 'Cost Update', color: 'info' },
   subprocess_started: { displayName: 'Subprocess Started', color: 'primary' },
   subprocess_ended: { displayName: 'Subprocess Ended', color: 'default' },
+  subagent_started: { displayName: 'Subagent Started', color: 'secondary' },
+  subagent_stopped: { displayName: 'Subagent Done', color: 'secondary' },
 };
 
 const EventItem: React.FC<{ event: AgentEvent }> = ({ event }) => {
@@ -174,6 +177,61 @@ const EventItem: React.FC<{ event: AgentEvent }> = ({ event }) => {
   );
 };
 
+/** Scrollable actions list that auto-scrolls to bottom for running subagents */
+const SubagentActions: React.FC<{ actions: { tool: string; detail: string }[]; running: boolean }> = ({ actions, running }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Scroll only the actions container itself — NOT scrollIntoView which
+    // propagates up to all ancestor scrollable containers and causes the
+    // main drawer body to stutter on every live update.
+    if (running && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  }, [actions.length, running]);
+
+  return (
+    <Box ref={containerRef} sx={{
+      pl: 2.5, mt: 0.5, maxHeight: 120, overflowY: 'auto',
+      '&::-webkit-scrollbar': { width: 4 },
+      '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.1)', borderRadius: 2 },
+    }}>
+      {actions.map((action, i) => (
+        <Box key={i} sx={{ display: 'flex', gap: 0.75, alignItems: 'baseline' }}>
+          <Typography
+            variant="caption"
+            sx={{
+              color: '#6b7280',
+              fontSize: '10px',
+              fontFamily: 'monospace',
+              fontWeight: 600,
+              flexShrink: 0,
+              minWidth: 48,
+            }}
+          >
+            {action.tool}
+          </Typography>
+          {action.detail && (
+            <Typography
+              variant="caption"
+              sx={{
+                color: 'text.secondary',
+                fontSize: '10px',
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {action.detail}
+            </Typography>
+          )}
+        </Box>
+      ))}
+    </Box>
+  );
+};
+
 export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) => {
   const { agents, selectedAgentId, drawerOpen, setDrawerOpen, markAgentSeen } = useAgentStore();
   const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
@@ -227,6 +285,8 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
           width: 450,
           bgcolor: '#0f0f0f',
           borderLeft: '1px solid rgba(255,255,255,0.1)',
+          display: 'flex',
+          flexDirection: 'column',
         },
       }}
     >
@@ -314,6 +374,9 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         </Box>
       </Box>
 
+      {/* Scrollable body: Subprocess Tree + Subagents + Event Timeline */}
+      <Box sx={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+
       {/* Subprocess Tree */}
       {Object.keys(agent.subprocesses).length > 0 && (
         <Box sx={{ p: 2, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -324,8 +387,66 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         </Box>
       )}
 
+      {/* Subagents (Claude Code Task tool) */}
+      {Object.keys(agent.subagents || {}).length > 0 && (
+        <Box sx={{ p: 2, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+          <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+            Subagents ({Object.keys(agent.subagents).length})
+          </Typography>
+          {Object.values(agent.subagents)
+            .sort((a, b) => b.started_at - a.started_at)
+            .map((sa) => {
+              const durationSec = sa.ended_at
+                ? Math.round(sa.ended_at - sa.started_at)
+                : null;
+              return (
+                <Box
+                  key={sa.id}
+                  sx={{ py: 0.75, borderBottom: '1px solid rgba(255,255,255,0.04)', '&:last-child': { borderBottom: 'none' } }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {sa.state === 'running' ? (
+                      <CircularProgress size={10} thickness={5} sx={{ color: '#8b5cf6' }} />
+                    ) : (
+                      <CheckCircleIcon sx={{ fontSize: 12, color: '#6b7280' }} />
+                    )}
+                    <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '11px' }}>
+                      {sa.agent_type}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '10px', ml: 'auto' }}>
+                      {sa.state === 'running' ? 'running...' : durationSec !== null ? `${durationSec}s` : ''}
+                    </Typography>
+                  </Box>
+                  {/* Tool call actions — scrollable, auto-scrolls to bottom while running */}
+                  {sa.actions && sa.actions.length > 0 && (
+                    <SubagentActions actions={sa.actions} running={sa.state === 'running'} />
+                  )}
+                  {/* Final message (only if no actions to show, avoid duplication) */}
+                  {sa.last_message && (!sa.actions || sa.actions.length === 0) && (
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: 'text.secondary',
+                        fontSize: '10px',
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                        pl: 2.5,
+                        mt: 0.25,
+                      }}
+                    >
+                      {sa.last_message}
+                    </Typography>
+                  )}
+                </Box>
+              );
+            })}
+        </Box>
+      )}
+
       {/* Event Timeline */}
-      <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
+      <Box sx={{ p: 2 }}>
         <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
           Event Timeline ({agentEvents.length} events)
         </Typography>
@@ -341,12 +462,15 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         )}
       </Box>
 
+      </Box> {/* end scrollable body */}
+
       {/* Footer with timestamps */}
       <Box
         sx={{
           p: 2,
           borderTop: '1px solid rgba(255,255,255,0.1)',
           bgcolor: 'rgba(0,0,0,0.3)',
+          flexShrink: 0,
         }}
       >
         <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block' }}>

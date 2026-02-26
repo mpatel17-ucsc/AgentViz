@@ -1,5 +1,4 @@
 import sys
-print(f"[AgentViz Debug] cli.py is being executed!", file=sys.stderr)
 import argparse
 import asyncio
 import os
@@ -94,7 +93,6 @@ def run(args):
                     sio = socketio.Client()
                     sio.connect("http://localhost:8787", wait_timeout=2)
                 except Exception:
-                    print(f"[AgentViz Debug] Could not reconnect socket", file=sys.stderr)
                     return
 
             if sio and sio.connected:
@@ -118,9 +116,8 @@ def run(args):
                     "metadata": {"state": "stopped", "source": reason, "return_code": return_code}
                 })
 
-                # CRITICAL: Wait for events to be sent before disconnecting
+                # Wait for events to be sent before disconnecting
                 time.sleep(0.3)
-                print(f"[AgentViz Debug] Emitted agent_stopped for {agent_id} (reason={reason})", file=sys.stderr)
 
                 # Disconnect if we created a new connection
                 if sio != monitor.sio:

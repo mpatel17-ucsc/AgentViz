@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import shutil
 import socketio
@@ -114,6 +115,7 @@ def get_or_create_agent(agent_id: str, agent_type: str, working_dir: str) -> dic
             "completed_at": None,
             "started_at": now,
             "subprocesses": {},
+            "subagents": {},
             "first_seen": now,
             "user_last_seen": None,
             "task_started": False,
@@ -373,6 +375,123 @@ def update_subprocess(agent: dict, event_type: str, metadata: dict):
             }
 
 
+def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
+    """Extract the most human-readable part of a tool's input."""
+    if not tool_input:
+        return ""
+    if tool_name in ("Read", "Write", "Edit", "NotebookEdit"):
+        return tool_input.get("file_path", "")
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        return cmd[:80] if cmd else ""
+    if tool_name in ("Glob",):
+        return tool_input.get("pattern", "")
+    if tool_name in ("Grep", "SearchFiles"):
+        pattern = tool_input.get("pattern", tool_input.get("query", ""))
+        path = tool_input.get("path", "")
+        return f"{pattern} in {path}" if path else pattern
+    if tool_name == "Task":
+        return tool_input.get("description", tool_input.get("prompt", ""))[:80]
+    if tool_name == "WebFetch":
+        return tool_input.get("url", "")[:80]
+    if tool_name == "WebSearch":
+        return tool_input.get("query", "")
+    # Generic fallback: first string value found
+    for v in tool_input.values():
+        if isinstance(v, str) and v:
+            return v[:80]
+    return ""
+
+
+def parse_subagent_transcript(path: str) -> list:
+    """
+    Parse a Claude Code subagent transcript JSONL and extract tool calls.
+    Returns a list of {tool, detail} dicts. Fails gracefully — always returns a list.
+    """
+    if not path:
+        return []
+    actions = []
+    try:
+        expanded = os.path.expanduser(path)
+        if not os.path.exists(expanded):
+            return []
+        with open(expanded, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+
+                # Claude Code transcript format: each line is a message object.
+                # The assistant role contains tool_use blocks we care about.
+                content = None
+                role = entry.get("role")
+                if role == "assistant":
+                    content = entry.get("content")
+                elif "message" in entry:
+                    msg = entry["message"]
+                    if isinstance(msg, dict) and msg.get("role") == "assistant":
+                        content = msg.get("content")
+
+                if not isinstance(content, list):
+                    continue
+
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use":
+                        tool_name = block.get("name", "unknown")
+                        tool_input = block.get("input") or {}
+                        detail = _summarize_tool_input(tool_name, tool_input)
+                        actions.append({"tool": tool_name, "detail": detail})
+    except Exception as e:
+        print(f"[BACKEND] Could not parse subagent transcript {path}: {e}")
+    return actions
+
+
+def update_subagent(agent: dict, event_type: str, metadata: dict):
+    """Update Claude Code subagent (Task tool) tracking for an agent"""
+    subagent_id = metadata.get("subagent_id")
+    if not subagent_id:
+        return
+
+    if event_type == "subagent_started":
+        agent["subagents"][subagent_id] = {
+            "id": subagent_id,
+            "agent_type": metadata.get("agent_type", "unknown"),
+            "state": "running",
+            "started_at": metadata.get("started_at", time.time()),
+            "ended_at": None,
+            "last_message": None,
+            "actions": [],
+        }
+    elif event_type == "subagent_activity":
+        existing = agent["subagents"].get(subagent_id)
+        if existing:
+            actions = list(existing.get("actions", []))
+            actions.append({
+                "tool": metadata.get("tool", "unknown"),
+                "detail": metadata.get("detail", ""),
+            })
+            existing["actions"] = actions
+    elif event_type == "subagent_stopped":
+        existing = agent["subagents"].get(subagent_id, {})
+        transcript_path = metadata.get("transcript_path", "")
+        actions = parse_subagent_transcript(transcript_path)
+        agent["subagents"][subagent_id] = {
+            "id": subagent_id,
+            "agent_type": metadata.get("agent_type") or existing.get("agent_type", "unknown"),
+            "state": "completed",
+            "started_at": existing.get("started_at", time.time()),
+            "ended_at": metadata.get("ended_at", time.time()),
+            "last_message": metadata.get("last_message") or None,
+            "actions": actions,
+        }
+
+
 # ============================================
 # Socket.IO Event Handlers
 # ============================================
@@ -477,6 +596,10 @@ async def agent_event(sid, data: dict):
     if event_type in ("subprocess_started", "subprocess_ended", "tool_call"):
         update_subprocess(agent, event_type, metadata)
 
+    # Handle subagent events (Claude Code Task tool)
+    if event_type in ("subagent_started", "subagent_stopped", "subagent_activity"):
+        update_subagent(agent, event_type, metadata)
+
     # Apply state transition
     new_state, old_state = transition_agent_state(agent, event_type, metadata)
 
@@ -501,6 +624,9 @@ async def agent_event(sid, data: dict):
             "timestamp": time.time(),
         })
         print(f"[BACKEND] Sending agent_state for agent_id={agent['id']}")
+        await sio.emit('agent_state', agent)
+    elif event_type in ("subagent_started", "subagent_stopped", "subagent_activity"):
+        # State didn't change but subagents list changed — update frontend
         await sio.emit('agent_state', agent)
 
 
@@ -728,6 +854,7 @@ async def launch_terminal(sid, data: dict):
             "completed_at": None,
             "started_at": now,
             "subprocesses": {},
+            "subagents": {},
             "first_seen": now,
             "user_last_seen": None,
             "task_started": False,

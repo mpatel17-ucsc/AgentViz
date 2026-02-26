@@ -1,11 +1,12 @@
 # AgentViz
 
-AgentViz is a local dashboard + event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, etc.) while they run in a workspace.
+AgentViz is a local dashboard and event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, and others) while they run in a workspace. It includes a Python backend (FastAPI + Socket.IO), a React frontend dashboard, per-agent adapters, optional `tmux` + `ttyd` web terminals, and remote viewing support over Tailscale/LAN.
 
 
 ![AgentViz Dashboard](images/AgentViz_Dashboard.png)
 ![AgentViz Agent Detail View](images/AgentViz_AgentDetail.png)
 ![AgentViz Tmux Session](images/AgentViz_Tmux_session.png)
+
 ## Quick Install (one command)
 
 ```bash
@@ -32,16 +33,6 @@ agentviz --help
 ```
 
 > **Note:** `tmux` and `ttyd` are system tools the installer does not manage — install them separately (`brew install tmux ttyd` on macOS) if you plan to use `--tmux-start`.
-
----
-
-It includes:
-
-- A Python backend (`FastAPI` + `Socket.IO`) on port `8787`
-- A React frontend dashboard (default `npm start` port `3000`)
-- Agent adapters for Gemini / Claude / Codex
-- Optional `tmux` + `ttyd` mode for interactive web terminals per agent
-- Remote viewing support over Tailscale/LAN
 
 ## Features
 
@@ -83,7 +74,9 @@ AgentViz does not install these CLIs for you.
 **Preferred — using `uv` (fastest, reproducible):**
 
 ```bash
-uv sync          # creates .venv, installs all deps + agentviz CLI
+uv sync                    # creates .venv, installs all deps
+uv pip install -e .        # install agentviz CLI in editable mode
+source .venv/bin/activate  # activate venv so `agentviz` is on PATH
 ```
 
 **Alternative — using pip:**
@@ -104,40 +97,24 @@ Install frontend dependencies once:
 npm install --prefix frontend
 ```
 
-## Dependency Notes (`requirements.txt` vs local `venv`)
-
-The project's local `venv` package set includes the core runtime dependencies and telemetry-related packages used by the adapters.
-
-Verified against the local `venv` package install:
-
-- Core runtime packages are present in your venv (`fastapi`, `uvicorn`, `pydantic`, `python-socketio`, `psutil`, `watchdog`, `toml`, `requests`)
-- Your venv also includes `opentelemetry-proto`, which the Gemini/Claude/Codex adapters use for richer OTEL telemetry parsing
-
-`requirements.txt` has been updated to include:
-
-- `opentelemetry-proto` (for adapter telemetry support)
-- `uvicorn[standard]` (instead of plain `uvicorn`) for a more complete backend runtime
-
 ## Agent CLI Setup (Gemini / Claude / Codex)
 
-### Important: manual hook/OTEL config is usually NOT required
+### Automatic hook configuration
 
-AgentViz already manages agent-specific hook configuration when you run `agentviz run`:
+AgentViz manages agent-specific hook configuration automatically when you run `agentviz run`:
 
 - Gemini: writes/merges `.gemini/settings.json` in the target workspace, enables hooks, and restores it on cleanup
 - Claude Code: writes/merges `.claude/settings.local.json` in the target workspace and restores it on cleanup
 - Codex CLI: creates a temporary `CODEX_HOME` with a generated `config.toml` notify hook (no permanent global config changes required)
 
-### OpenTelemetry collector setup (your question)
+### OpenTelemetry collector
 
-You generally do **not** need to run a separate OTEL collector manually for AgentViz.
+You do **not** need to run a separate OTEL collector. AgentViz adapters start a local OTLP receiver automatically (when telemetry dependencies are installed) and set the required environment variables for the agent process.
 
-AgentViz adapters start a local OTLP receiver automatically (when telemetry dependencies are installed) and set the needed environment variables for the agent process.
+### Prerequisites per CLI
 
-### What you still must do
-
-- Install each CLI
-- Authenticate each CLI (vendor login/auth flow)
+- Install the CLI
+- Authenticate (vendor login/auth flow)
 - Ensure the executable is on `PATH` or use an absolute path
 
 Examples:
@@ -193,7 +170,7 @@ Agent type aliases supported:
 - Codex: `codex`, `codex-cli`, `openai-codex`
 - Synthetic test adapter: `synthetic`
 
-### `--remote` on `server` vs `run` (important)
+### `--remote` on `server` vs `run`
 
 - `agentviz server --remote` exposes the **backend** (`8787`) to other devices
 - `agentviz run --remote <host-or-ip>` exposes each agent's **ttyd web terminal** and tells AgentViz what host/IP to embed in the terminal URL
@@ -202,17 +179,17 @@ They are different flags with different meanings.
 
 ## Standard Run Workflow (3 terminals)
 
-Use placeholders, not absolute paths from your machine:
+The following placeholders are used throughout this section:
 
-- `<PROJECT_ROOT>` = this repository root
-- `<WORKSPACE>` = the repo/folder the coding agent should work inside
-- `<TAILSCALE_IP_OR_HOSTNAME>` = your laptop's Tailscale IP or hostname
+- `<PROJECT_ROOT>` — this repository root
+- `<WORKSPACE>` — the directory the coding agent will work inside
+- `<TAILSCALE_IP_OR_HOSTNAME>` — your Tailscale IP or hostname
 
 ### Terminal 1: Backend
 
 ```bash
 cd <PROJECT_ROOT>
-source venv/bin/activate
+source .venv/bin/activate  # or `source venv/bin/activate` if you used pip
 agentviz server --remote
 ```
 
@@ -233,7 +210,7 @@ Gemini:
 
 ```bash
 cd <PROJECT_ROOT>
-source venv/bin/activate
+source .venv/bin/activate  # or `source venv/bin/activate` if you used pip
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> gemini-cli /path/to/gemini
 ```
 
@@ -241,7 +218,7 @@ Claude Code:
 
 ```bash
 cd <PROJECT_ROOT>
-source venv/bin/activate
+source .venv/bin/activate
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> claude-code claude
 ```
 
@@ -249,11 +226,11 @@ Codex CLI:
 
 ```bash
 cd <PROJECT_ROOT>
-source venv/bin/activate
+source .venv/bin/activate
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
 ```
 
-If the agent executable is already on `PATH`, you can use the command name directly. If not, use the full path (as in your Gemini example).
+If the agent executable is on `PATH`, use the command name directly. Otherwise, provide the full path.
 
 ## Tailscale Setup (Phone Access)
 
@@ -281,7 +258,7 @@ Use that IP (or your Tailscale hostname) as `<TAILSCALE_IP_OR_HOSTNAME>`.
 http://<TAILSCALE_IP_OR_HOSTNAME>:3000
 ```
 
-Example (from your setup):
+Example:
 
 ```text
 http://100.x.x.x:3000
@@ -367,9 +344,9 @@ AgentViz runs a persistent FastAPI + Socket.IO server (~37 MB), whereas TmuxCC a
   - Make sure frontend was started with `HOST=0.0.0.0 npm start --prefix frontend`
   - Confirm laptop and phone are on the same Tailscale tailnet
 
-- Concern about agent settings files being modified
-  - AgentViz writes temporary hook config into the workspace (`.gemini/settings.json` or `.claude/settings.local.json`) and restores/removes it during cleanup
-  - Codex uses a temporary `CODEX_HOME` instead of changing your global config
+- Agent settings files are modified unexpectedly
+  - AgentViz writes temporary hook config into the workspace (`.gemini/settings.json` or `.claude/settings.local.json`) and restores it on cleanup
+  - Codex uses a temporary `CODEX_HOME` and does not modify your global config
 
 ## Notes
 

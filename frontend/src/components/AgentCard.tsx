@@ -107,6 +107,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging, socket 
   };
 
   const hasSubprocesses = Object.keys(agent.subprocesses).length > 0;
+  const activeSubagents = Object.values(agent.subagents || {}).filter(s => s.state === 'running');
 
   return (
     <Paper
@@ -267,6 +268,16 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isDragging, socket 
           {agent.last_message}
         </Typography>
       ) : null}
+
+      {/* Active subagents (Claude Code Task tool) */}
+      {activeSubagents.length > 0 && (
+        <Box sx={{ mt: 0.5, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <CircularProgress size={8} thickness={5} sx={{ color: '#8b5cf6' }} />
+          <Typography variant="caption" sx={{ color: '#8b5cf6', fontSize: '10px' }}>
+            {activeSubagents.map(s => s.agent_type).join(', ')}
+          </Typography>
+        </Box>
+      )}
 
       {/* Subprocess tree (compact, inline) */}
       {hasSubprocesses && (

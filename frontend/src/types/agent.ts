@@ -44,6 +44,22 @@ export function mapBackendStateToFrontend(backendState: BackendState): AgentStat
   }
 }
 
+// Claude Code subagent (spawned via Task tool)
+export interface SubagentAction {
+  tool: string;
+  detail: string;
+}
+
+export interface Subagent {
+  id: string;
+  agent_type: string;
+  state: 'running' | 'completed';
+  started_at: number;
+  ended_at: number | null;
+  last_message: string | null;
+  actions?: SubagentAction[];
+}
+
 // Subprocess information
 export interface Subprocess {
   pid: number;
@@ -72,6 +88,7 @@ export interface Agent {
   completed_at: number | null;
   started_at: number;
   subprocesses: Record<number, Subprocess>;
+  subagents: Record<string, Subagent>;
   first_seen: number;
   user_last_seen: number | null;
   ttyd_url: string | null;
