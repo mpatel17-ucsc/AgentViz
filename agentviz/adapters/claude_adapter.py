@@ -75,6 +75,9 @@ class ClaudeAdapter(BaseAdapter):
         self._claude_settings_backup = None
         self._current_state = "idle"
 
+        # Live subagent transcript watchers: { subagent_id -> asyncio.Task }
+        self._subagent_watchers: dict = {}
+
         # Deferred-Stop: when Stop fires immediately after a permission response,
         # it may be a turn boundary before PreToolUse (approval path), not a real
         # task completion. We defer the transition to ready and wait up to 1 second
@@ -128,6 +131,17 @@ def main():
                 data["tool_name"] = hook_input["tool_name"]
             if "notification_type" in hook_input:
                 data["notification_type"] = hook_input["notification_type"]
+            if "agent_id" in hook_input:
+                data["subagent_id"] = hook_input["agent_id"]
+            if "agent_type" in hook_input:
+                data["subagent_type"] = hook_input["agent_type"]
+            if "last_assistant_message" in hook_input:
+                msg = hook_input["last_assistant_message"]
+                data["last_assistant_message"] = msg[:500] if msg else ""
+            if "transcript_path" in hook_input:
+                data["transcript_path"] = hook_input["transcript_path"]
+            if "agent_transcript_path" in hook_input:
+                data["agent_transcript_path"] = hook_input["agent_transcript_path"]
         except json.JSONDecodeError:
             pass
 
@@ -224,6 +238,8 @@ if __name__ == "__main__":
                 ],
                 "UserPromptSubmit": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} user_prompt_submit"}]}],
                 "SessionEnd": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} session_end"}]}],
+                "SubagentStart": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} subagent_start"}]}],
+                "SubagentStop": [{"hooks": [{"type": "command", "command": f"python3 {hook_script_path} subagent_stop"}]}],
             }
         }
 
@@ -351,6 +367,106 @@ if __name__ == "__main__":
                 "source": "hook",
                 "hook_event": "stop"
             })
+
+    def _derive_subagent_transcript_path(self, parent_transcript: str, subagent_id: str) -> str:
+        """
+        Derive the subagent's own transcript path from the parent transcript path.
+        Convention: parent /path/session.jsonl → /path/session/subagents/agent-{id}.jsonl
+        """
+        if not parent_transcript or not subagent_id:
+            return ""
+        expanded = os.path.expanduser(parent_transcript)
+        if expanded.endswith(".jsonl"):
+            session_dir = expanded[:-6]
+        else:
+            session_dir = expanded
+        return os.path.join(session_dir, "subagents", f"agent-{subagent_id}.jsonl")
+
+    def _summarize_tool_input(self, tool_name: str, tool_input: dict) -> str:
+        """Extract the most human-readable part of a tool's input."""
+        if not tool_input:
+            return ""
+        if tool_name in ("Read", "Write", "Edit", "NotebookEdit"):
+            return tool_input.get("file_path", "")
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "")
+            return cmd[:80] if cmd else ""
+        if tool_name in ("Glob",):
+            return tool_input.get("pattern", "")
+        if tool_name in ("Grep", "SearchFiles"):
+            pattern = tool_input.get("pattern", tool_input.get("query", ""))
+            path = tool_input.get("path", "")
+            return f"{pattern} in {path}" if path else pattern
+        if tool_name == "Task":
+            return tool_input.get("description", tool_input.get("prompt", ""))[:80]
+        if tool_name == "WebFetch":
+            return tool_input.get("url", "")[:80]
+        if tool_name == "WebSearch":
+            return tool_input.get("query", "")
+        for v in tool_input.values():
+            if isinstance(v, str) and v:
+                return v[:80]
+        return ""
+
+    async def _watch_subagent_transcript(self, subagent_id: str, transcript_path: str):
+        """
+        Tail a subagent JSONL transcript file and emit subagent_activity events
+        for each tool_use block discovered. Polls every 0.5s until cancelled.
+        """
+        debug_print(f"[HOOKS] Live watcher started for subagent {subagent_id}: {transcript_path}")
+        last_position = 0
+
+        while not self.shutdown_event.is_set():
+            try:
+                if os.path.exists(transcript_path):
+                    with open(transcript_path, 'r', encoding='utf-8') as f:
+                        f.seek(last_position)
+                        new_lines = f.readlines()
+                        last_position = f.tell()
+
+                    for line in new_lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        # Parse tool_use blocks from assistant messages
+                        content = None
+                        role = entry.get("role")
+                        if role == "assistant":
+                            content = entry.get("content")
+                        elif "message" in entry:
+                            msg = entry["message"]
+                            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                                content = msg.get("content")
+
+                        if not isinstance(content, list):
+                            continue
+
+                        for block in content:
+                            if not isinstance(block, dict):
+                                continue
+                            if block.get("type") == "tool_use":
+                                tool_name = block.get("name", "unknown")
+                                tool_input = block.get("input") or {}
+                                detail = self._summarize_tool_input(tool_name, tool_input)
+                                debug_print(f"[HOOKS] Subagent {subagent_id} live tool: {tool_name}")
+                                await self.emit_event("subagent_activity", {
+                                    "subagent_id": subagent_id,
+                                    "tool": tool_name,
+                                    "detail": detail,
+                                })
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                debug_print(f"[HOOKS] Watcher error for subagent {subagent_id}: {e}")
+
+            await asyncio.sleep(0.5)
+
+        debug_print(f"[HOOKS] Live watcher stopped for subagent {subagent_id}")
 
     async def _monitor_state_file(self):
         """Monitor the state file for hook events and emit state changes"""
@@ -541,6 +657,47 @@ if __name__ == "__main__":
                                     "state": "stopped",
                                     "source": "hook",
                                     "hook_event": event_type
+                                })
+
+                            elif event_type == "subagent_start":
+                                subagent_id = event_data.get("subagent_id", "")
+                                subagent_type = event_data.get("subagent_type", "unknown")
+                                parent_transcript = event_data.get("transcript_path", "")
+                                debug_print(f"[HOOKS] Subagent started: {subagent_type} ({subagent_id})")
+                                await self.emit_event("subagent_started", {
+                                    "subagent_id": subagent_id,
+                                    "agent_type": subagent_type,
+                                    "started_at": event_data.get("timestamp", 0) / 1000,
+                                })
+                                # Start live transcript watcher for this subagent
+                                if subagent_id and parent_transcript:
+                                    sa_transcript = self._derive_subagent_transcript_path(parent_transcript, subagent_id)
+                                    if sa_transcript:
+                                        task = asyncio.create_task(
+                                            self._watch_subagent_transcript(subagent_id, sa_transcript)
+                                        )
+                                        self._subagent_watchers[subagent_id] = task
+
+                            elif event_type == "subagent_stop":
+                                subagent_id = event_data.get("subagent_id", "")
+                                subagent_type = event_data.get("subagent_type", "unknown")
+                                last_message = event_data.get("last_assistant_message", "")
+                                transcript_path = event_data.get("agent_transcript_path", "")
+                                debug_print(f"[HOOKS] Subagent stopped: {subagent_type} ({subagent_id}), transcript: {transcript_path}")
+                                # Cancel live watcher — final actions will come from subagent_stopped transcript parse
+                                if subagent_id and subagent_id in self._subagent_watchers:
+                                    watcher = self._subagent_watchers.pop(subagent_id)
+                                    watcher.cancel()
+                                    try:
+                                        await watcher
+                                    except asyncio.CancelledError:
+                                        pass
+                                await self.emit_event("subagent_stopped", {
+                                    "subagent_id": subagent_id,
+                                    "agent_type": subagent_type,
+                                    "last_message": last_message,
+                                    "transcript_path": transcript_path,
+                                    "ended_at": event_data.get("timestamp", 0) / 1000,
                                 })
 
                         except json.JSONDecodeError as e:
@@ -839,5 +996,14 @@ if __name__ == "__main__":
                     await self.otel_processor_task
                 except asyncio.CancelledError:
                     pass
+
+            # Cancel any remaining subagent watchers
+            for _, watcher in list(self._subagent_watchers.items()):
+                watcher.cancel()
+                try:
+                    await watcher
+                except asyncio.CancelledError:
+                    pass
+            self._subagent_watchers.clear()
 
             self._cleanup_hooks_config()
