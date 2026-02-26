@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Drawer,
   Box,
@@ -173,6 +173,61 @@ const EventItem: React.FC<{ event: AgentEvent }> = ({ event }) => {
         </Typography>
       </Box>
       {renderMetadata()}
+    </Box>
+  );
+};
+
+/** Scrollable actions list that auto-scrolls to bottom for running subagents */
+const SubagentActions: React.FC<{ actions: { tool: string; detail: string }[]; running: boolean }> = ({ actions, running }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Scroll only the actions container itself — NOT scrollIntoView which
+    // propagates up to all ancestor scrollable containers and causes the
+    // main drawer body to stutter on every live update.
+    if (running && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  }, [actions.length, running]);
+
+  return (
+    <Box ref={containerRef} sx={{
+      pl: 2.5, mt: 0.5, maxHeight: 120, overflowY: 'auto',
+      '&::-webkit-scrollbar': { width: 4 },
+      '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.1)', borderRadius: 2 },
+    }}>
+      {actions.map((action, i) => (
+        <Box key={i} sx={{ display: 'flex', gap: 0.75, alignItems: 'baseline' }}>
+          <Typography
+            variant="caption"
+            sx={{
+              color: '#6b7280',
+              fontSize: '10px',
+              fontFamily: 'monospace',
+              fontWeight: 600,
+              flexShrink: 0,
+              minWidth: 48,
+            }}
+          >
+            {action.tool}
+          </Typography>
+          {action.detail && (
+            <Typography
+              variant="caption"
+              sx={{
+                color: 'text.secondary',
+                fontSize: '10px',
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {action.detail}
+            </Typography>
+          )}
+        </Box>
+      ))}
     </Box>
   );
 };
@@ -362,42 +417,9 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
                       {sa.state === 'running' ? 'running...' : durationSec !== null ? `${durationSec}s` : ''}
                     </Typography>
                   </Box>
-                  {/* Tool call actions parsed from transcript */}
+                  {/* Tool call actions — scrollable, auto-scrolls to bottom while running */}
                   {sa.actions && sa.actions.length > 0 && (
-                    <Box sx={{ pl: 2.5, mt: 0.5 }}>
-                      {sa.actions.map((action, i) => (
-                        <Box key={i} sx={{ display: 'flex', gap: 0.75, alignItems: 'baseline' }}>
-                          <Typography
-                            variant="caption"
-                            sx={{
-                              color: '#6b7280',
-                              fontSize: '10px',
-                              fontFamily: 'monospace',
-                              fontWeight: 600,
-                              flexShrink: 0,
-                              minWidth: 48,
-                            }}
-                          >
-                            {action.tool}
-                          </Typography>
-                          {action.detail && (
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                color: 'text.secondary',
-                                fontSize: '10px',
-                                fontFamily: 'monospace',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {action.detail}
-                            </Typography>
-                          )}
-                        </Box>
-                      ))}
-                    </Box>
+                    <SubagentActions actions={sa.actions} running={sa.state === 'running'} />
                   )}
                   {/* Final message (only if no actions to show, avoid duplication) */}
                   {sa.last_message && (!sa.actions || sa.actions.length === 0) && (
