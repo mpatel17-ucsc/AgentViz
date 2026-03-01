@@ -1,0 +1,89 @@
+{
+  "timestamp": "2026-02-23T22:48:31.672128",
+  "scenario": "complex",
+  "trials": 5,
+  "methodology": "unified_agent.py runs the same coding task under each dashboard. AGentviz latency: AWAITING_APPROVAL in the synthetic agent log to 'waiting_for_input' Socket.IO event arrival (same approval-detection latency definition used for all dashboards). TmuxCC latency: fake 'claude' wrapper (exec unified_agent.py) runs in a new window of the current attached tmux session so TmuxCC can discover it; TmuxCC's TUI pane is captured at 20ms (alternate-screen capture first) until a waiting indicator appears. AoE latency: 'aoe session start' (requires $TMUX) runs the fake 'claude' wrapper via PATH override in an isolated AoE profile; 'aoe status --json' is polled at 20ms until waiting > 0. Benchmark auto-bootstraps into tmux if $TMUX is not set. Approval prompts include 'Allow this action? [Y/n]' plus 'Yes, allow once/always' to match TmuxCC/AoE Claude waiting patterns. Detection accuracy: pane content polled at 100ms using TmuxCC/AoE patterns: spinner-in-title or (?i)(thinking|processing|...) \u2192 Processing; (?i)[y/n]|allow|confirm|approve \u2192 AwaitingApproval.",
+  "tmux_capture_baseline": {
+    "method": "write sentinel via send-keys, poll capture-pane until visible",
+    "trials": 20,
+    "p50_ms": 8.154,
+    "p95_ms": 9.847,
+    "p99_ms": 12.354,
+    "mean_ms": 8.34
+  },
+  "agentviz": {
+    "detection_mechanism": "push (Socket.IO), waiting_for_input arrival",
+    "detection_event": "AWAITING_APPROVAL in log \u2192 waiting_for_input socket event arrival",
+    "latency_ms": {
+      "p50_mean_across_trials": 27.727,
+      "p95_mean_across_trials": 44.551,
+      "mean_mean_across_trials": 27.727
+    },
+    "detection_accuracy_pct_mean": 100.0,
+    "trials_completed": 5
+  },
+  "tmuxcc": {
+    "status": "ok",
+    "measurement": "tmuxcc_pane_captured_at_20ms",
+    "detection_event": "AWAITING_APPROVAL in log \u2192 'Pending approval' in TmuxCC pane",
+    "tool": "TmuxCC",
+    "trials_run": 5,
+    "latencies_measured": 10,
+    "poll_interval_ms": 500.0,
+    "poll_interval_source": "extracted from 'tmuxcc --help' at runtime",
+    "latency_ms": {
+      "p50": 121.601,
+      "p95": 388.178,
+      "mean": 184.698
+    }
+  },
+  "aoe": {
+    "status": "ok",
+    "measurement": "aoe_status_json_polled_at_20ms",
+    "detection_event": "AWAITING_APPROVAL in log \u2192 aoe status --json waiting > 0",
+    "trials_run": 5,
+    "latencies_measured": 10,
+    "poll_interval_ms": 20.0,
+    "latency_ms": {
+      "p50": 61.493,
+      "p95": 69.629,
+      "mean": 60.722
+    }
+  },
+  "tui_detection_accuracy": {
+    "scenario": "complex",
+    "expected_unique_states": [
+      "AwaitingApproval",
+      "Idle",
+      "Completed",
+      "Processing"
+    ],
+    "detected_unique_states": [
+      "AwaitingApproval",
+      "Idle",
+      "Completed",
+      "Processing"
+    ],
+    "state_coverage_pct": 100.0,
+    "total_transitions_in_log": 15
+  },
+  "overhead": {
+    "agentviz_server": {
+      "peak_rss_mb": 36.9,
+      "method": "max RSS among uvicorn/agentviz-server processes (ps)",
+      "note": "Persistent daemon \u2014 always resident while monitoring"
+    },
+    "tmuxcc": {
+      "peak_rss_mb": 7.0,
+      "method": "/usr/bin/time -l tmuxcc --help  (binary init, no active monitoring)",
+      "poll_interval_ms": 500.0,
+      "note": "TUI \u2014 requires terminal for live use; binary init cost shown here"
+    },
+    "aoe": {
+      "peak_rss_mb": 7.9,
+      "method": "/usr/bin/time -l aoe status  (binary init + session query)",
+      "poll_interval_ms": null,
+      "note": "TUI \u2014 requires terminal for live use; binary init cost shown here"
+    }
+  }
+}
