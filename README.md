@@ -3,9 +3,9 @@
 AgentViz is a local dashboard and event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, and others) while they run in a workspace. It includes a Python backend (FastAPI + Socket.IO), a React frontend dashboard, per-agent adapters, optional `tmux` + `ttyd` web terminals, and remote viewing support over Tailscale/LAN.
 
 
-![AgentViz Dashboard](images/AgentViz_Dashboard.png)
-![AgentViz Agent Detail View](images/AgentViz_AgentDetail.png)
-![AgentViz Tmux Session](images/AgentViz_Tmux_session.png)
+![AgentViz Dashboard](images/AgentVizDashboard.png)
+![AgentViz Agent Detail View](images/AgentVizLaunchAgent.png)
+![AgentViz Tmux Session](images/AgentVizTmux.png)
 
 ## Quick Install (one command)
 
