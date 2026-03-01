@@ -2,7 +2,6 @@
 
 AgentViz is a local dashboard and event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, and others) while they run in a workspace. It includes a Python backend (FastAPI + Socket.IO), a React frontend dashboard, per-agent adapters, optional `tmux` + `ttyd` web terminals, and remote viewing support over Tailscale/LAN.
 
-
 ![AgentViz Dashboard](images/AgentVizDashboard.png)
 ![AgentViz Agent Detail View](images/AgentVizLaunchAgent.png)
 ![AgentViz Tmux Session](images/AgentVizTmux.png)
@@ -10,7 +9,7 @@ AgentViz is a local dashboard and event pipeline for visualizing coding agents (
 ## Quick Install (one command)
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/CSE247B_VisualizationCodingAgents/main/scripts/install.sh | sh -s -- ~/agentviz
+curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh -s -- ~/agentviz
 ```
 
 This single command:
@@ -230,7 +229,7 @@ source .venv/bin/activate
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
 ```
 
-If the agent executable is on `PATH`, use the command name directly. Otherwise, provide the full path.
+If the agent executable is on `PATH`, use the command name directly. Otherwise provide the full path (e.g. `gemini-cli /opt/homebrew/bin/gemini`).
 
 ## Tailscale Setup (Phone Access)
 
@@ -270,62 +269,9 @@ Notes:
 - The frontend connects to backend port `8787` automatically using the same host shown in the browser URL
 - Per-agent `ttyd` terminals use dynamically assigned ports (AgentViz publishes those links in the dashboard)
 
-## Common Examples
+## Benchmarks
 
-Gemini with absolute binary path:
-
-```bash
-agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> gemini-cli /opt/homebrew/bin/gemini
-```
-
-Claude Code:
-
-```bash
-agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> claude-code claude
-```
-
-Codex CLI:
-
-```bash
-agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP_OR_HOSTNAME> codex-cli codex
-```
-
-## Experiments
-
-Benchmarks were run on a complex coding task scenario (5 trials each) comparing AgentViz against two terminal-native agent dashboards: [TmuxCC](https://github.com/felixbrock/tmuxcc) and [Agent of Empires (AoE)](https://github.com/fellowapp/aoe).
-
-### Methodology
-
-A synthetic `unified_agent.py` script replays a fixed sequence of agent states (Processing → AwaitingApproval → Idle → Completed) with realistic timing. Each dashboard monitors the same fake agent via its native mechanism:
-
-- **AgentViz**: push event — time from `AWAITING_APPROVAL` in the agent log to `waiting_for_input` Socket.IO event arrival
-- **TmuxCC**: poll at 500 ms — `tmux capture-pane` until `Pending approval` appears in TmuxCC's TUI pane
-- **AoE**: poll at 20 ms — `aoe status --json` until `waiting > 0`
-
-Tmux `send-keys` / `capture-pane` round-trip baseline (p50 = 8.2 ms, p95 = 9.8 ms) was measured separately to isolate terminal I/O overhead from dashboard overhead.
-
-### Approval-Detection Latency
-
-| Dashboard | p50 (ms) | p95 (ms) | Mean (ms) | Mechanism |
-|-----------|----------|----------|-----------|-----------|
-| **AgentViz** | **27.7** | **44.6** | **27.7** | Push (Socket.IO) |
-| AoE | 61.5 | 69.6 | 60.7 | Poll 20 ms |
-| TmuxCC | 121.6 | 388.2 | 184.7 | Poll 500 ms |
-
-AgentViz detects approval prompts ~2× faster than AoE and ~7× faster than TmuxCC at the median. All three tools achieved 100% state-coverage accuracy (AwaitingApproval, Processing, Idle, Completed all detected across all trials).
-
-### Memory Overhead
-
-| Tool | Peak RSS (MB) | Notes |
-|------|--------------|-------|
-| **AgentViz server** | 36.9 | Persistent daemon — always resident while monitoring |
-| AoE | 7.9 | TUI — binary init + session query cost shown |
-| TmuxCC | 7.0 | TUI — binary init cost shown |
-
-AgentViz runs a persistent FastAPI + Socket.IO server (~37 MB), whereas TmuxCC and AoE are TUI binaries that are only active when opened in a terminal. The memory trade-off enables push-based detection and the web dashboard.
-
-![Latency comparison](images/Latency.png)
-![Memory comparison](images/Memory.png)
+AgentViz was benchmarked against [TmuxCC](https://github.com/nyanko3141592/tmuxcc) and [Agent of Empires](https://github.com/njbrake/agent-of-empires) on approval-detection latency and memory overhead. See [`benchmarks/`](benchmarks/) for the full methodology, results, and reproduction instructions.
 
 ## Troubleshooting
 
