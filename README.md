@@ -25,11 +25,6 @@ Then add the bin directory to your PATH (printed by the installer):
 export PATH="$HOME/agentviz/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
 ```
 
-Verify:
-
-```bash
-agentviz --help
-```
 
 > **Note:** `tmux` and `ttyd` are system tools the installer does not manage — install them separately (`brew install tmux ttyd` on macOS) if you plan to use `--tmux-start`.
 
@@ -86,6 +81,12 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 pip install -e .
+```
+
+Verify:
+
+```bash
+agentviz --help
 ```
 
 ## Frontend Setup
