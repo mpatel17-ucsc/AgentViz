@@ -106,18 +106,6 @@ agentviz --help
 
 ## Agent CLI Setup (Gemini / Claude / Codex)
 
-### Automatic hook configuration
-
-AgentViz manages agent-specific hook configuration automatically when you run `agentviz run`:
-
-- Gemini: writes/merges `.gemini/settings.json` in the target workspace, enables hooks, and restores it on cleanup
-- Claude Code: writes/merges `.claude/settings.local.json` in the target workspace and restores it on cleanup
-- Codex CLI: creates a temporary `CODEX_HOME` with a generated `config.toml` notify hook (no permanent global config changes required)
-
-### OpenTelemetry collector
-
-You do **not** need to run a separate OTEL collector. AgentViz adapters start a local OTLP receiver automatically (when telemetry dependencies are installed) and set the required environment variables for the agent process.
-
 ### Prerequisites per CLI
 
 - Install the CLI
