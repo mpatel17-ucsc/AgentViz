@@ -156,11 +156,20 @@ agentviz run -w <workspace> <agent-type> <agent-command> [agent-args...]
 | Flag / Argument | Required | Description |
 |-----------------|----------|-------------|
 | `-w <workspace>` | **Yes** | Directory the agent will work inside |
-| `<agent-type>` | **Yes** | Adapter name: `gemini-cli`, `claude-code`, `codex-cli`, or `synthetic` |
-| `<agent-command>` | **Yes** | Command to launch the agent (e.g. `claude`, `/path/to/gemini`) |
+| `<agent-type>` | **Yes** | See table below |
+| `<agent-command>` | **Yes** | See table below |
 | `--tmux-start` | No | Run agent in a `tmux` session and expose a `ttyd` web terminal |
 | `--remote <ip-or-hostname>` | No | Required if using `--tmux-start` for phone access — sets the host embedded in the `ttyd` terminal URL |
 | `-i, --id <agent-id>` | No | Custom ID for this agent in the dashboard (default: `<agent-type>-<pid>`) |
+
+**`<agent-type>` and `<agent-command>` by agent:**
+
+| Agent | `<agent-type>` | `<agent-command>` |
+|-------|---------------|-------------------|
+| Gemini CLI | `gemini-cli` | `/opt/homebrew/bin/gemini` |
+| Claude Code | `claude-code` | `claude` |
+| Codex CLI | `codex-cli` | `codex` |
+| Synthetic (test) | `synthetic` | any dummy command (e.g. `echo`) |
 
 > **`--remote` on `server` vs `run` are different:**
 > - `agentviz server --remote` — exposes the **backend** to other devices
@@ -188,7 +197,7 @@ Pick the command for the agent you want to run. Replace `<WORKSPACE>` with the d
 
 ```bash
 # Gemini CLI
-agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> gemini-cli /path/to/gemini
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> gemini-cli /opt/homebrew/bin/gemini
 
 # Claude Code
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> claude-code claude
