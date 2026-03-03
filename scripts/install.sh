@@ -2,24 +2,39 @@
 # AgentViz one-command installer
 #
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/CSE247B_VisualizationCodingAgents/main/scripts/install.sh | sh -s -- [INSTALL_DIR]
+#   curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh -s -- [INSTALL_DIR]
 #
-# INSTALL_DIR defaults to ~/agentviz if not provided.
-# The agentviz binary is placed in <INSTALL_DIR>/bin/agentviz.
-# Add that directory to PATH (printed at the end) to use the CLI.
+# INSTALL_DIR defaults to ~/.local/share/agentviz (XDG) when ~/.local exists,
+# otherwise ~/agentviz. The agentviz wrapper is placed in ~/.local/bin or
+# <INSTALL_DIR>/bin respectively.
 
 set -eu
 
-REPO_URL="https://github.com/mpatel17-ucsc/CSE247B_VisualizationCodingAgents.git"
-INSTALL_DIR="${1:-$HOME/agentviz}"
+REPO_URL="https://github.com/mpatel17-ucsc/AgentViz.git"
+
+# ---------------------------------------------------------------------------
+# Resolve install and bin directories
+# ---------------------------------------------------------------------------
+if [ -z "${1:-}" ] && [ -d "$HOME/.local" ]; then
+  INSTALL_DIR="$HOME/.local/share/agentviz"
+  BIN_DIR="$HOME/.local/bin"
+elif [ -z "${1:-}" ]; then
+  INSTALL_DIR="$HOME/agentviz"
+  BIN_DIR="$HOME/agentviz/bin"
+else
+  INSTALL_DIR="$1"
+  BIN_DIR="$INSTALL_DIR/bin"
+fi
 
 # Expand leading ~ manually (POSIX sh does not expand ~ in assignments)
 case "$INSTALL_DIR" in
   "~"/*) INSTALL_DIR="$HOME/${INSTALL_DIR#\~/}" ;;
   "~")   INSTALL_DIR="$HOME" ;;
 esac
-
-BIN_DIR="$INSTALL_DIR/bin"
+case "$BIN_DIR" in
+  "~"/*) BIN_DIR="$HOME/${BIN_DIR#\~/}" ;;
+  "~")   BIN_DIR="$HOME" ;;
+esac
 
 say() { printf "==> %s\n" "$*"; }
 err() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
@@ -73,20 +88,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Expose agentviz binary in <INSTALL_DIR>/bin/
+# 5. Write wrapper script so users never need to activate the venv manually
 # ---------------------------------------------------------------------------
-say "Creating bin symlink at $BIN_DIR/agentviz ..."
+say "Writing agentviz wrapper to $BIN_DIR/agentviz ..."
 mkdir -p "$BIN_DIR"
-ln -sf "$INSTALL_DIR/.venv/bin/agentviz" "$BIN_DIR/agentviz"
+cat > "$BIN_DIR/agentviz" <<WRAPPER
+#!/bin/sh
+exec "$INSTALL_DIR/.venv/bin/agentviz" "\$@"
+WRAPPER
+chmod +x "$BIN_DIR/agentviz"
 
 # ---------------------------------------------------------------------------
-# 6. Detect shell config file for PATH hint
+# 6. Offer to append BIN_DIR to PATH in the user's shell rc (ask first)
 # ---------------------------------------------------------------------------
 SHELL_RC=""
 case "${SHELL:-}" in
   */zsh)  SHELL_RC="$HOME/.zshrc" ;;
   */bash) SHELL_RC="$HOME/.bashrc" ;;
   *)      SHELL_RC="your shell rc file" ;;
+esac
+
+case ":${PATH}:" in
+  *":$BIN_DIR:"*) ;; # already on PATH — nothing to do
+  *)
+    printf "\nAdd '%s' to PATH in %s? [y/N] " "$BIN_DIR" "$SHELL_RC"
+    read -r _answer
+    case "$_answer" in
+      [yY]*)
+        printf '\n# Added by AgentViz installer\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$SHELL_RC"
+        say "Appended to $SHELL_RC — run: source $SHELL_RC"
+        ;;
+      *)
+        echo "Skipped. Add manually: export PATH=\"$BIN_DIR:\$PATH\""
+        ;;
+    esac
+    ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -96,14 +132,6 @@ echo ""
 echo "======================================================"
 echo "  AgentViz installed successfully!"
 echo "======================================================"
-echo ""
-echo "Add agentviz to your PATH by appending this line"
-echo "to $SHELL_RC:"
-echo ""
-echo "    export PATH=\"$BIN_DIR:\$PATH\""
-echo ""
-echo "Then reload your shell:"
-echo "    source $SHELL_RC"
 echo ""
 echo "Verify:"
 echo "    agentviz --help"
