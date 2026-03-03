@@ -12,21 +12,29 @@ AgentViz is a local dashboard and event pipeline for visualizing coding agents (
 curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh
 ```
 
+Run this from whatever directory you want AgentViz installed in — the repo clones to an `agentviz/` folder there:
+
+```bash
+# e.g. from ~/Documents → installs to ~/Documents/agentviz
+cd ~/Documents
+curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh
+```
+
 This single command:
 - Installs `uv` if not already present
-- Clones the repo to `~/.local/share/agentviz` (or `~/agentviz` on systems without `~/.local`)
+- Clones the repo to `agentviz/` in your current directory
 - Creates a project-local Python venv and installs all dependencies
 - Installs `npm` frontend dependencies if `node` is on PATH
-- Writes an `agentviz` wrapper script to `~/.local/bin/` (or `~/agentviz/bin/`) — no manual venv activation ever needed
-- Asks if you want the bin directory added to `PATH` in your shell rc automatically
+- Writes an `agentviz` wrapper to `~/.local/bin/` — no manual venv activation ever needed
+- Asks if you want `~/.local/bin` added to `PATH` in your shell rc automatically
 
-You can pass a custom install directory as the first argument:
+To install to a specific path instead:
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh -s -- ~/my-agentviz
 ```
 
-If the installer didn't update your shell rc, add the bin directory manually:
+If the installer didn't update your shell rc, add this manually:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
@@ -128,49 +136,35 @@ Starts the backend server (Socket.IO + API) on port `8787`.
 agentviz server [--bind <ip>] [--remote]
 ```
 
-Flags:
+All flags are optional — running `agentviz server` with no flags works for local-only use.
 
-- `--bind <ip>`: Bind backend to a specific address (default `127.0.0.1`)
-- `--remote`: Convenience flag that binds backend to `0.0.0.0` for Tailscale/LAN access
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--remote` | No | Binds to `0.0.0.0` so other devices (phone, tablet) can reach the backend. Use this for Tailscale/LAN access. |
+| `--bind <ip>` | No | Bind to a specific IP instead. Default is `127.0.0.1` (localhost only). |
 
-Notes:
-
-- Use `--remote` when viewing from another device (phone/tablet/laptop)
-- Backend is always on port `8787`
+Backend is always on port `8787`.
 
 ### `agentviz run`
 
 Runs and monitors one coding agent process.
 
 ```bash
-agentviz run -w <workspace> [options] <agent-type> <agent-command> [args...]
+agentviz run -w <workspace> <agent-type> <agent-command> [agent-args...]
 ```
 
-Required:
+| Flag / Argument | Required | Description |
+|-----------------|----------|-------------|
+| `-w <workspace>` | **Yes** | Directory the agent will work inside |
+| `<agent-type>` | **Yes** | Adapter name: `gemini-cli`, `claude-code`, `codex-cli`, or `synthetic` |
+| `<agent-command>` | **Yes** | Command to launch the agent (e.g. `claude`, `/path/to/gemini`) |
+| `--tmux-start` | No | Run agent in a `tmux` session and expose a `ttyd` web terminal |
+| `--remote <ip-or-hostname>` | No | Required if using `--tmux-start` for phone access — sets the host embedded in the `ttyd` terminal URL |
+| `-i, --id <agent-id>` | No | Custom ID for this agent in the dashboard (default: `<agent-type>-<pid>`) |
 
-- `-w <workspace>`: Workspace directory the agent will run in
-- `<agent-type>`: Logical adapter name (examples below)
-- `<agent-command> [args...]`: Actual command to launch the agent
-
-Options:
-
-- `-i, --id <agent-id>`: Custom AgentViz ID (default is `<agent-type>-<pid>`)
-- `--tmux-start`: Run the agent in a `tmux` session and expose a `ttyd` web terminal
-- `--remote <hostname-or-ip>`: Hostname/IP used in generated remote `ttyd` URLs (also makes `ttyd` listen on `0.0.0.0`)
-
-Agent type aliases supported:
-
-- Gemini: `gemini`, `gemini-cli`
-- Claude: `claude`, `claude-code`
-- Codex: `codex`, `codex-cli`, `openai-codex`
-- Synthetic test adapter: `synthetic`
-
-### `--remote` on `server` vs `run`
-
-- `agentviz server --remote` exposes the **backend** (`8787`) to other devices
-- `agentviz run --remote <host-or-ip>` exposes each agent's **ttyd web terminal** and tells AgentViz what host/IP to embed in the terminal URL
-
-They are different flags with different meanings.
+> **`--remote` on `server` vs `run` are different:**
+> - `agentviz server --remote` — exposes the **backend** to other devices
+> - `agentviz run --remote <ip>` — exposes each agent's **ttyd web terminal** to other devices
 
 ## Running AgentViz
 
@@ -183,9 +177,10 @@ agentviz server --remote
 
 **Tab 2 — Frontend**
 ```bash
-HOST=0.0.0.0 npm start --prefix ~/.local/share/agentviz/frontend
+cd agentviz/frontend   # relative to wherever you ran curl
+HOST=0.0.0.0 npm start
 ```
-> If you installed to a custom path, replace `~/.local/share/agentviz` with your `<INSTALL_DIR>`. `HOST=0.0.0.0` makes the dashboard reachable from your phone over Tailscale/LAN.
+> `HOST=0.0.0.0` makes the dashboard reachable from your phone over Tailscale/LAN.
 
 **Tab 3 — Agent**
 

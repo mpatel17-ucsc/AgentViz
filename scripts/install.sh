@@ -15,25 +15,17 @@ REPO_URL="https://github.com/mpatel17-ucsc/AgentViz.git"
 # ---------------------------------------------------------------------------
 # Resolve install and bin directories
 # ---------------------------------------------------------------------------
-if [ -z "${1:-}" ] && [ -d "$HOME/.local" ]; then
-  INSTALL_DIR="$HOME/.local/share/agentviz"
-  BIN_DIR="$HOME/.local/bin"
-elif [ -z "${1:-}" ]; then
-  INSTALL_DIR="$HOME/agentviz"
-  BIN_DIR="$HOME/agentviz/bin"
+if [ -z "${1:-}" ]; then
+  INSTALL_DIR="$PWD/agentviz"
 else
   INSTALL_DIR="$1"
-  BIN_DIR="$INSTALL_DIR/bin"
 fi
+BIN_DIR="$HOME/.local/bin"
 
-# Expand leading ~ manually (POSIX sh does not expand ~ in assignments)
+# Expand leading ~ manually in INSTALL_DIR (POSIX sh does not expand ~ in assignments)
 case "$INSTALL_DIR" in
   "~"/*) INSTALL_DIR="$HOME/${INSTALL_DIR#\~/}" ;;
   "~")   INSTALL_DIR="$HOME" ;;
-esac
-case "$BIN_DIR" in
-  "~"/*) BIN_DIR="$HOME/${BIN_DIR#\~/}" ;;
-  "~")   BIN_DIR="$HOME" ;;
 esac
 
 say() { printf "==> %s\n" "$*"; }
@@ -141,7 +133,8 @@ echo "    # Terminal 1 — backend"
 echo "    agentviz server --remote"
 echo ""
 echo "    # Terminal 2 — frontend"
-echo "    HOST=0.0.0.0 npm start --prefix $INSTALL_DIR/frontend"
+echo "    cd $INSTALL_DIR/frontend"
+echo "    HOST=0.0.0.0 npm start"
 echo ""
 echo "    # Terminal 3 — agent"
 echo "    agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> gemini-cli /path/to/gemini"
