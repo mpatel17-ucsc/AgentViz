@@ -67,6 +67,9 @@ fi
 # ---------------------------------------------------------------------------
 say "Installing Python dependencies (uv sync)..."
 cd "$INSTALL_DIR"
+# Unset UV env vars that redirect project/venv locations — these would cause
+# uv to install into a different directory and break the wrapper script.
+unset UV_PROJECT UV_PROJECT_ENVIRONMENT UV_VENV 2>/dev/null || true
 uv sync
 
 # ---------------------------------------------------------------------------

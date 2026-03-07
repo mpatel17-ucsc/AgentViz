@@ -24,6 +24,38 @@ def _kill_stale_server(port=8787):
     except Exception:
         pass
 
+def update(args):
+    """Pull the latest code and reinstall Python + frontend dependencies."""
+    # Resolve the repo root: this file lives at <root>/agentviz/cli.py
+    install_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    print(f"Updating AgentViz at {install_dir} ...")
+
+    env = os.environ.copy()
+    for var in ('UV_PROJECT', 'UV_PROJECT_ENVIRONMENT', 'UV_VENV'):
+        env.pop(var, None)
+
+    try:
+        subprocess.run(['git', '-C', install_dir, 'pull', '--ff-only'], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"git pull failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        uv_path = os.path.join(os.path.dirname(sys.executable), 'uv')
+        subprocess.run([uv_path, 'sync'], cwd=install_dir, env=env, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"uv sync failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    frontend_dir = os.path.join(install_dir, 'frontend')
+    if os.path.isdir(frontend_dir) and subprocess.run(
+        ['npm', '--version'], capture_output=True
+    ).returncode == 0:
+        subprocess.run(['npm', 'install', '--prefix', frontend_dir, '--silent'], check=True)
+
+    print("AgentViz updated successfully.")
+
+
 def server(args):
     print("Starting AgentViz server...")
 
@@ -162,6 +194,10 @@ def main():
     print(f"[AgentViz Debug] sys.path: {sys.path}", file=sys.stderr)
     parser = argparse.ArgumentParser(description="AgentViz: Unified Visualization for Coding Agents.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Update Command
+    parser_update = subparsers.add_parser("update", help="Pull the latest AgentViz code and reinstall dependencies.")
+    parser_update.set_defaults(func=update)
 
     # Server Command
     parser_server = subparsers.add_parser("server", help="Start the AgentViz backend server.")

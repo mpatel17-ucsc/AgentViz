@@ -175,6 +175,16 @@ agentviz run -w <workspace> <agent-type> <agent-command> [agent-args...]
 > - `agentviz server --remote` — exposes the **backend** to other devices
 > - `agentviz run --remote <ip>` — exposes each agent's **ttyd web terminal** to other devices
 
+### `agentviz update`
+
+Pulls the latest code from the repo and reinstalls Python and frontend dependencies in-place.
+
+```bash
+agentviz update
+```
+
+No flags needed. Run this whenever you want to upgrade to the latest version.
+
 ## Running AgentViz
 
 Open **3 terminal tabs** and run one command in each.
