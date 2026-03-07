@@ -155,7 +155,7 @@ agentviz run -w <workspace> <agent-type> <agent-command> [agent-args...]
 
 | Flag / Argument | Required | Description |
 |-----------------|----------|-------------|
-| `-w <workspace>` | **Yes** | Directory the agent will work inside |
+| `-w <workspace>` | **Yes** | Directory the agent will work inside. Be careful not to use `-w .` from inside the AgentViz directory, as the agent could accidentally modify AgentViz itself. |
 | `<agent-type>` | **Yes** | See table below |
 | `<agent-command>` | **Yes** | See table below |
 | `--tmux-start` | No | Run agent in a `tmux` session and expose a `ttyd` web terminal |
