@@ -73,13 +73,26 @@ unset UV_PROJECT UV_PROJECT_ENVIRONMENT UV_VENV 2>/dev/null || true
 uv sync
 
 # ---------------------------------------------------------------------------
-# 4. Install frontend npm dependencies (optional — skip if npm missing)
+# 4. Ensure node/npm is available, install via nvm if not
 # ---------------------------------------------------------------------------
+if ! command -v npm >/dev/null 2>&1; then
+  say "npm not found — installing Node.js via nvm..."
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | sh
+  # Source nvm so it's available in this shell session
+  NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  if command -v nvm >/dev/null 2>&1; then
+    nvm install --lts
+    nvm use --lts
+    say "Node.js installed: $(node --version), npm: $(npm --version)"
+  else
+    printf "    [skip] nvm installation failed — install Node.js manually (https://nodejs.org) then run: npm install --prefix %s/frontend\n" "$INSTALL_DIR"
+  fi
+fi
+
 if command -v npm >/dev/null 2>&1; then
   say "Installing frontend dependencies (npm install)..."
   npm install --prefix frontend --silent
-else
-  printf "    [skip] npm not found — install Node.js to use the frontend dashboard.\n"
 fi
 
 # ---------------------------------------------------------------------------
