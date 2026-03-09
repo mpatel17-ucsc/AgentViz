@@ -52,7 +52,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Clone or update the repo
+# 2. Ensure git is available
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+  err "git not found. Install it first:
+  macOS:  xcode-select --install  (or: brew install git)
+  Ubuntu/WSL: sudo apt-get install -y git"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Clone or update the repo
 # ---------------------------------------------------------------------------
 if [ -d "$INSTALL_DIR/.git" ]; then
   say "Updating existing repo at $INSTALL_DIR ..."
@@ -63,7 +72,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Install Python deps + agentviz CLI into a project-local venv
+# 4. Install Python deps + agentviz CLI into a project-local venv
 # ---------------------------------------------------------------------------
 say "Installing Python dependencies (uv sync)..."
 cd "$INSTALL_DIR"
@@ -73,17 +82,30 @@ unset UV_PROJECT UV_PROJECT_ENVIRONMENT UV_VENV 2>/dev/null || true
 uv sync
 
 # ---------------------------------------------------------------------------
-# 4. Install frontend npm dependencies (optional — skip if npm missing)
+# 5. Ensure node/npm is available, install via nvm if not
 # ---------------------------------------------------------------------------
+if ! command -v npm >/dev/null 2>&1; then
+  say "npm not found — installing Node.js via nvm..."
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | sh
+  # Source nvm so it's available in this shell session
+  NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  if command -v nvm >/dev/null 2>&1; then
+    nvm install --lts
+    nvm use --lts
+    say "Node.js installed: $(node --version), npm: $(npm --version)"
+  else
+    printf "    [skip] nvm installation failed — install Node.js manually (https://nodejs.org) then run: npm install --prefix %s/frontend\n" "$INSTALL_DIR"
+  fi
+fi
+
 if command -v npm >/dev/null 2>&1; then
   say "Installing frontend dependencies (npm install)..."
   npm install --prefix frontend --silent
-else
-  printf "    [skip] npm not found — install Node.js to use the frontend dashboard.\n"
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Write wrapper script so users never need to activate the venv manually
+# 6. Write wrapper script so users never need to activate the venv manually
 # ---------------------------------------------------------------------------
 say "Writing agentviz wrapper to $BIN_DIR/agentviz ..."
 mkdir -p "$BIN_DIR"
@@ -94,7 +116,7 @@ WRAPPER
 chmod +x "$BIN_DIR/agentviz"
 
 # ---------------------------------------------------------------------------
-# 6. Offer to append BIN_DIR to PATH in the user's shell rc (ask first)
+# 7. Offer to append BIN_DIR to PATH in the user's shell rc (ask first)
 # ---------------------------------------------------------------------------
 SHELL_RC=""
 case "${SHELL:-}" in

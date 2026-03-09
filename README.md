@@ -37,11 +37,13 @@ cd ~/Documents
 curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh
 ```
 
+**Requires `git`** — install it first if needed (`xcode-select --install` on macOS, `sudo apt-get install -y git` on Ubuntu/WSL).
+
 This single command:
 - Installs `uv` if not already present
 - Clones the repo to `agentviz/` in your current directory
 - Creates a project-local Python venv and installs all dependencies
-- Installs `npm` frontend dependencies if `node` is on PATH
+- Installs Node.js via `nvm` if `node`/`npm` is not found, then installs frontend dependencies
 - Writes an `agentviz` wrapper to `~/.local/bin/` — no manual venv activation ever needed
 - Asks if you want `~/.local/bin` added to `PATH` in your shell rc automatically
 
@@ -278,6 +280,12 @@ Notes:
 AgentViz was benchmarked against [TmuxCC](https://github.com/nyanko3141592/tmuxcc) and [Agent of Empires](https://github.com/njbrake/agent-of-empires) on approval-detection latency and memory overhead. See [`benchmarks/`](benchmarks/) for the full methodology, results, and reproduction instructions.
 
 ## Troubleshooting
+
+- `nvm installation failed` / frontend deps skipped during install
+  - Install Node.js manually from https://nodejs.org (LTS recommended), then run:
+    ```bash
+    npm install --prefix <path-to-agentviz>/frontend
+    ```
 
 - `Error: Could not connect to AgentViz server at http://localhost:8787`
   - Start `agentviz server` first (same machine as `agentviz run`)
