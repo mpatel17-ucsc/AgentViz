@@ -37,6 +37,8 @@ cd ~/Documents
 curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh
 ```
 
+**Requires `git`** — install it first if needed (`xcode-select --install` on macOS, `sudo apt-get install -y git` on Ubuntu/WSL).
+
 This single command:
 - Installs `uv` if not already present
 - Clones the repo to `agentviz/` in your current directory
