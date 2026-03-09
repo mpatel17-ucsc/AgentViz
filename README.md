@@ -6,6 +6,23 @@ AgentViz is a local dashboard and event pipeline for visualizing coding agents (
 ![AgentViz Agent Detail View](images/AgentVizLaunchAgent.png)
 ![AgentViz Tmux Session](images/AgentVizTmux.png)
 
+## Windows Users
+
+**Windows is not natively supported.** AgentViz relies on Unix-only system modules (`pty`, `termios`, `tty`, `fcntl`) for its PTY-based terminal architecture, which do not exist on Windows.
+
+**Use WSL2 (Windows Subsystem for Linux):**
+
+1. Open PowerShell as Administrator and run:
+   ```powershell
+   wsl --install
+   ```
+2. Restart your machine, then open the WSL terminal (Ubuntu by default).
+3. Follow the Quick Install steps below from inside WSL.
+
+The backend and frontend run normally inside WSL, and you can access the dashboard from your Windows browser at `http://localhost:3000`.
+
+---
+
 ## Quick Install (one command)
 
 ```bash
