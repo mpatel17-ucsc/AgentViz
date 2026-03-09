@@ -60,7 +60,9 @@ export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
 ```
 
 
-> **Note:** `tmux` and `ttyd` are system tools the installer does not manage — install them separately (`brew install tmux ttyd` on macOS) if you plan to use `--tmux-start`.
+> **Note:** `tmux` and `ttyd` are system tools the installer does not manage — install them separately if you plan to use `--tmux-start`:
+> - **macOS:** `brew install tmux ttyd`
+> - **Ubuntu/WSL:** `sudo apt-get install -y tmux` — for `ttyd`, download the binary from [github.com/tsl0922/ttyd/releases](https://github.com/tsl0922/ttyd/releases): `curl -LO https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 && chmod +x ttyd.x86_64 && sudo mv ttyd.x86_64 /usr/local/bin/ttyd`
 
 ## Features
 
@@ -104,8 +106,7 @@ AgentViz does not install these CLIs for you.
 **Preferred — using `uv` (fastest, reproducible):**
 
 ```bash
-uv sync                    # creates .venv, installs all deps
-uv pip install -e .        # install agentviz CLI in editable mode
+uv sync                    # creates .venv, installs all deps + agentviz CLI
 source .venv/bin/activate  # activate venv so `agentviz` is on PATH
 ```
 
@@ -299,7 +300,7 @@ AgentViz was benchmarked against [TmuxCC](https://github.com/nyanko3141592/tmuxc
   - Confirm port `8787` is reachable on your Tailscale IP
 
 - Phone cannot open `http://<ip>:3000`
-  - Make sure frontend was started with `HOST=0.0.0.0 npm start --prefix frontend`
+  - Make sure frontend was started with `HOST=0.0.0.0 npm start` from the `agentviz/frontend/` directory
   - Confirm laptop and phone are on the same Tailscale tailnet
 
 - Agent settings files are modified unexpectedly
