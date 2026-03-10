@@ -361,7 +361,19 @@ def run(args):
                 pass
 
 def main():
-    parser = argparse.ArgumentParser(description="AgentViz: Unified Visualization for Coding Agents.")
+    parser = argparse.ArgumentParser(
+        description="AgentViz: Unified Visualization for Coding Agents.",
+        epilog=(
+            "Quick-start workflow:\n"
+            "  1. Start the dashboard:   agentviz server start\n"
+            "  2. Run an agent:          agentviz run -w /path/to/project claude\n"
+            "  3. Stop the dashboard:    agentviz server stop\n"
+            "\n"
+            "Supported agents: claude, gemini, codex\n"
+            "Dashboard URL:    http://localhost:8787\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Build Command
@@ -373,7 +385,17 @@ def main():
     parser_update.set_defaults(func=update)
 
     # Server Command
-    parser_server = subparsers.add_parser("server", help="Start the AgentViz backend + frontend.")
+    parser_server = subparsers.add_parser(
+        "server",
+        help="Start or stop the AgentViz dashboard server.",
+        description=(
+            "Start or stop the AgentViz dashboard server.\n\n"
+            "  agentviz server          # start the server (default)\n"
+            "  agentviz server start    # same as above\n"
+            "  agentviz server stop     # stop a running server from another terminal\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser_server.add_argument("action", nargs="?", choices=["start", "stop"], default="start",
                                help="'start' (default) starts the server; 'stop' stops it from another terminal.")
     parser_server.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1).")
@@ -388,13 +410,28 @@ def main():
     parser_server.set_defaults(func=server)
 
     # Run Command
-    parser_run = subparsers.add_parser("run", help="Run a coding agent and monitor it.")
-    parser_run.add_argument("-w", required=True, help="Workspace directory for the agent.")
+    parser_run = subparsers.add_parser(
+        "run",
+        help="Run a coding agent and stream it to the dashboard.",
+        description=(
+            "Run a coding agent in the current terminal and stream its output to the\n"
+            "AgentViz dashboard. The server must already be running before using this command.\n\n"
+            "Examples:\n"
+            "  agentviz run -w ~/myproject claude\n"
+            "  agentviz run -w ~/myproject gemini\n"
+            "  agentviz run -w ~/myproject codex\n"
+            "  agentviz run -w ~/myproject -i my-agent claude\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser_run.add_argument("-w", required=True, metavar="WORKSPACE",
+                            help="Workspace directory for the agent (required).")
     parser_run.add_argument("-i", "--id", default=None, help="Custom agent ID (default: <agent_type>-<pid>).")
     parser_run.add_argument("--tmux-start", action="store_true", help="Run agent inside a tmux session with a TTYD web terminal.")
     parser_run.add_argument("--remote", metavar="HOSTNAME", default=None, help="Tailscale/LAN hostname for remote access (e.g. 'manav-macbook'). Makes ttyd URLs accessible from other devices.")
-    parser_run.add_argument("agent", help="Agent shorthand: claude, gemini, codex. Or a custom type with an explicit command after it.")
-    parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="Override the default command (optional for known agents).")
+    parser_run.add_argument("agent", metavar="AGENT",
+                            help="Agent to run: claude, gemini, or codex.")
+    parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="Override the default agent command (optional for known agents).")
     parser_run.set_defaults(func=run)
 
     args = parser.parse_args()
