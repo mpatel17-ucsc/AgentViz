@@ -492,7 +492,6 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
       <Dialog
         open={terminalDialogOpen}
         onClose={() => setTerminalDialogOpen(false)}
-        keepMounted
         maxWidth={false}
         PaperProps={{
           sx: {
@@ -529,39 +528,70 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
           </IconButton>
         </DialogTitle>
         <DialogContent sx={{ p: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {isTouchDevice ? (
-            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, p: 3 }}>
-              <Button
-                variant="outlined"
-                color="info"
-                startIcon={<OpenInNewIcon />}
-                onClick={() => window.open(resolveTerminalUrl(agent.ttyd_url!), '_blank')}
+          <iframe
+            src={resolveTerminalUrl(agent.ttyd_url!)}
+            style={{
+              width: '100%',
+              flex: 1,
+              border: 'none',
+              backgroundColor: '#000',
+            }}
+            title={`Terminal for ${agent.id}`}
+          />
+          {isTouchDevice && agent.tmux_session && (
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'center',
+                gap: 2,
+                p: 1.5,
+                bgcolor: '#111',
+                borderTop: '1px solid rgba(255,255,255,0.1)',
+                // Isolate from iframe touch handling: prevent the browser
+                // from interpreting taps on these buttons as scroll/pan
+                // gestures targeting the adjacent ttyd iframe.
+                position: 'relative',
+                zIndex: 10,
+                touchAction: 'manipulation',
+              }}
+            >
+              <IconButton
+                onPointerDown={(e) => { e.preventDefault(); handleSendKey('Up'); }}
+                sx={{
+                  width: 56,
+                  height: 56,
+                  bgcolor: 'rgba(255,255,255,0.1)',
+                  '&:active': { bgcolor: 'rgba(255,255,255,0.3)' },
+                  touchAction: 'manipulation',
+                }}
               >
-                Open Terminal in New Tab
-              </Button>
-              {agent.tmux_session && (
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5 }}>
-                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>Agent controls</Typography>
-                  <Box sx={{ display: 'flex', gap: 2, touchAction: 'manipulation' }}>
-                    <IconButton onPointerDown={(e) => { e.preventDefault(); handleSendKey('Up'); }} sx={{ width: 56, height: 56, bgcolor: 'rgba(255,255,255,0.1)', '&:active': { bgcolor: 'rgba(255,255,255,0.3)' }, touchAction: 'manipulation' }}>
-                      <ArrowUpwardIcon sx={{ fontSize: 28 }} />
-                    </IconButton>
-                    <IconButton onPointerDown={(e) => { e.preventDefault(); handleSendKey('Down'); }} sx={{ width: 56, height: 56, bgcolor: 'rgba(255,255,255,0.1)', '&:active': { bgcolor: 'rgba(255,255,255,0.3)' }, touchAction: 'manipulation' }}>
-                      <ArrowDownwardIcon sx={{ fontSize: 28 }} />
-                    </IconButton>
-                    <IconButton onPointerDown={(e) => { e.preventDefault(); handleSendKey('Enter'); }} sx={{ width: 56, height: 56, bgcolor: 'rgba(59,130,246,0.3)', '&:active': { bgcolor: 'rgba(59,130,246,0.5)' }, touchAction: 'manipulation' }}>
-                      <KeyboardReturnIcon sx={{ fontSize: 28 }} />
-                    </IconButton>
-                  </Box>
-                </Box>
-              )}
+                <ArrowUpwardIcon sx={{ fontSize: 28 }} />
+              </IconButton>
+              <IconButton
+                onPointerDown={(e) => { e.preventDefault(); handleSendKey('Down'); }}
+                sx={{
+                  width: 56,
+                  height: 56,
+                  bgcolor: 'rgba(255,255,255,0.1)',
+                  '&:active': { bgcolor: 'rgba(255,255,255,0.3)' },
+                  touchAction: 'manipulation',
+                }}
+              >
+                <ArrowDownwardIcon sx={{ fontSize: 28 }} />
+              </IconButton>
+              <IconButton
+                onPointerDown={(e) => { e.preventDefault(); handleSendKey('Enter'); }}
+                sx={{
+                  width: 56,
+                  height: 56,
+                  bgcolor: 'rgba(59,130,246,0.3)',
+                  '&:active': { bgcolor: 'rgba(59,130,246,0.5)' },
+                  touchAction: 'manipulation',
+                }}
+              >
+                <KeyboardReturnIcon sx={{ fontSize: 28 }} />
+              </IconButton>
             </Box>
-          ) : (
-            <iframe
-              src={resolveTerminalUrl(agent.ttyd_url!)}
-              style={{ width: '100%', flex: 1, border: 'none', backgroundColor: '#000' }}
-              title={`Terminal for ${agent.id}`}
-            />
           )}
         </DialogContent>
       </Dialog>
