@@ -69,11 +69,12 @@ Open **2 terminal tabs**.
 
 **Tab 1 — Server**
 ```bash
-agentviz server           # local only  → open http://localhost:8787
-agentviz server --remote  # Tailscale   → open http://<TAILSCALE_IP>:8787
+agentviz server start           # local only  → open http://localhost:8787
+agentviz server start --remote  # Tailscale   → open http://<TAILSCALE_IP>:8787
 ```
 
 This starts the backend and frontend together on port `8787`. No separate `npm start` needed.
+To stop from another terminal: `agentviz server stop`
 
 **Tab 2 — Agent**
 
@@ -102,9 +103,8 @@ agentviz run -w <WORKSPACE> --tmux-start codex
 Starts the backend and frontend together on a single port.
 
 ```bash
-agentviz server           # foreground — Ctrl+C to stop
-agentviz server start     # background daemon
-agentviz server stop      # stop the background daemon
+agentviz server start     # start (default — runs in foreground, Ctrl+C to stop)
+agentviz server stop      # stop from another terminal
 ```
 
 | Flag | Default | Description |
@@ -189,7 +189,7 @@ http://<TAILSCALE_IP>:8787
 
 Start AgentViz with:
 ```bash
-agentviz server --remote
+agentviz server start --remote
 agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> claude
 ```
 

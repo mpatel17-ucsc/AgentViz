@@ -130,12 +130,10 @@ def update(args):
 
 _STATE_DIR = os.path.expanduser("~/.agentviz")
 _PID_FILE  = os.path.join(_STATE_DIR, "server.pid")
-_LOG_FILE  = os.path.join(_STATE_DIR, "server.log")
 
 
-def _server_procs(args):
-    """Return (uvicorn_cmd, frontend_cmd_or_None, bind_addr) based on args."""
-    import shutil as _shutil
+def _build_procs(args):
+    """Resolve commands and URLs for backend + optional frontend."""
     bind_addr    = '0.0.0.0' if args.remote else args.host
     package_dir  = os.path.dirname(__file__)
     frontend_dir = os.path.abspath(os.path.join(package_dir, '..', 'frontend'))
@@ -149,8 +147,7 @@ def _server_procs(args):
     static_dir = os.path.join(package_dir, 'static')
     has_static  = os.path.isfile(os.path.join(static_dir, 'index.html'))
 
-    frontend_cmd = None
-    frontend_url = None
+    frontend_spec = None
     if not args.dev and has_static:
         frontend_url = f"http://{bind_addr}:{args.port}  (pre-built static)"
     elif os.path.isdir(frontend_dir):
@@ -161,12 +158,13 @@ def _server_procs(args):
         env['HOST']    = bind_addr
         env['PORT']    = str(args.frontend_port)
         env['BROWSER'] = 'none'
-        frontend_cmd = (['npm', 'start'], frontend_dir, env)
+        frontend_spec = (['npm', 'start'], frontend_dir, env)
         frontend_url = f"http://{bind_addr}:{args.frontend_port}  (dev server)"
     else:
         print("  Warning: no frontend found. Run 'agentviz build' to build it.")
+        frontend_url = None
 
-    return backend_cmd, frontend_cmd, bind_addr, frontend_url
+    return backend_cmd, frontend_spec, bind_addr, frontend_url
 
 
 def _server_stop():
@@ -187,58 +185,38 @@ def _server_stop():
     print("Stopped: " + ", ".join(killed) if killed else "Server processes already stopped.")
 
 
-def _server_start_daemon(args):
-    import json
+def _server_run(args):
+    import json, time
     _kill_stale_server(args.port)
-    backend_cmd, frontend_cmd, bind_addr, frontend_url = _server_procs(args)
+    backend_cmd, frontend_spec, bind_addr, frontend_url = _build_procs(args)
 
-    os.makedirs(_STATE_DIR, exist_ok=True)
-    log = open(_LOG_FILE, 'a')
-
-    backend_proc = subprocess.Popen(backend_cmd, stdout=log, stderr=log,
-                                    start_new_session=True)
-    state = {'backend': backend_proc.pid}
-
-    if frontend_cmd:
-        cmd, cwd, env = frontend_cmd
-        fp = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log, stderr=log,
-                              start_new_session=True)
-        state['frontend'] = fp.pid
-
-    log.close()
-    with open(_PID_FILE, 'w') as f:
-        json.dump(state, f)
-
-    print(f"AgentViz server started (pid {backend_proc.pid})")
-    print(f"  Dashboard: http://{bind_addr}:{args.port}")
-    if frontend_url:
-        print(f"  Frontend:  {frontend_url}")
-    print(f"  Logs:      {_LOG_FILE}")
-    print(f"  Stop with: agentviz server stop")
-
-
-def _server_foreground(args):
-    import time
-    _kill_stale_server(args.port)
-    backend_cmd, frontend_cmd, bind_addr, frontend_url = _server_procs(args)
-
-    stdout = None if args.debug else subprocess.DEVNULL
+    quiet = not args.debug
+    stdio = subprocess.DEVNULL if quiet else None
     processes = []
 
+    os.makedirs(_STATE_DIR, exist_ok=True)
+
     try:
-        backend_proc = subprocess.Popen(backend_cmd, stdout=stdout, stderr=stdout)
+        backend_proc = subprocess.Popen(backend_cmd, stdout=stdio, stderr=stdio)
         processes.append(backend_proc)
-        print(f"  Backend:  http://{bind_addr}:{args.port}")
+        state = {'backend': backend_proc.pid}
+
+        if frontend_spec:
+            cmd, cwd, env = frontend_spec
+            fp = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=stdio, stderr=stdio)
+            processes.append(fp)
+            state['frontend'] = fp.pid
+
+        # Save PIDs so `agentviz server stop` can kill from another terminal
+        with open(_PID_FILE, 'w') as f:
+            json.dump(state, f)
+
+        print(f"  Dashboard: http://{bind_addr}:{args.port}")
         if frontend_url:
-            print(f"  Frontend: {frontend_url}")
+            print(f"  Frontend:  {frontend_url}")
         if args.remote:
             print("  Remote access enabled — listening on all interfaces.")
-        print("  Press Ctrl+C to stop.\n")
-
-        if frontend_cmd:
-            cmd, cwd, env = frontend_cmd
-            fp = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=stdout, stderr=stdout)
-            processes.append(fp)
+        print("  Press Ctrl+C or run 'agentviz server stop' to stop.\n")
 
         while True:
             for p in processes:
@@ -260,18 +238,17 @@ def _server_foreground(args):
                     p.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     p.kill()
+        if os.path.isfile(_PID_FILE):
+            os.remove(_PID_FILE)
         print("AgentViz stopped.")
 
 
 def server(args):
-    action = getattr(args, 'action', None)
-    if action == 'stop':
+    if getattr(args, 'action', None) == 'stop':
         _server_stop()
-    elif action == 'start':
-        _server_start_daemon(args)
     else:
         print("Starting AgentViz server...")
-        _server_foreground(args)
+        _server_run(args)
 
 def run(args):
     import time
@@ -397,8 +374,8 @@ def main():
 
     # Server Command
     parser_server = subparsers.add_parser("server", help="Start the AgentViz backend + frontend.")
-    parser_server.add_argument("action", nargs="?", choices=["start", "stop"],
-                               help="'start' runs as a background daemon; 'stop' kills it. Omit to run in the foreground.")
+    parser_server.add_argument("action", nargs="?", choices=["start", "stop"], default="start",
+                               help="'start' (default) starts the server; 'stop' stops it from another terminal.")
     parser_server.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1).")
     parser_server.add_argument("--port", default=8787, type=int, help="Backend port (default: 8787).")
     parser_server.add_argument("--frontend-port", default=3000, type=int, dest="frontend_port",
