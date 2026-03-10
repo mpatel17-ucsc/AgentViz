@@ -5,6 +5,29 @@ import os
 import subprocess
 from agentviz.monitor import Monitor
 
+def _resolve_agent(name):
+    """
+    Resolve a shorthand agent name to (agent_type, command).
+    Tries shutil.which first, then falls back to known install paths.
+    Returns None if name is not a known shorthand.
+    """
+    import shutil
+    _KNOWN = {
+        'claude': ('claude-code', ['claude']),
+        'gemini': ('gemini-cli',  ['gemini', '/opt/homebrew/bin/gemini']),
+        'codex':  ('codex-cli',   ['codex']),
+    }
+    entry = _KNOWN.get(name.lower())
+    if entry is None:
+        return None
+    agent_type, candidates = entry
+    for cmd in candidates:
+        if shutil.which(cmd) or os.path.isfile(cmd):
+            return agent_type, cmd
+    # Fall back to the first candidate even if not found (will fail with a clear error at runtime)
+    return agent_type, candidates[0]
+
+
 def _kill_stale_server(port=8787):
     """Kill any existing process listening on the given port."""
     try:
@@ -105,64 +128,118 @@ def update(args):
     print("AgentViz updated successfully.")
 
 
-def server(args):
-    import time
+_STATE_DIR = os.path.expanduser("~/.agentviz")
+_PID_FILE  = os.path.join(_STATE_DIR, "server.pid")
+_LOG_FILE  = os.path.join(_STATE_DIR, "server.log")
 
-    print("Starting AgentViz server...")
 
-    bind_addr = '0.0.0.0' if args.remote else args.host
-
-    # Kill any stale server still holding the port from a previous run
-    _kill_stale_server(args.port)
-
-    package_dir = os.path.dirname(__file__)  # .../agentviz/
+def _server_procs(args):
+    """Return (uvicorn_cmd, frontend_cmd_or_None, bind_addr) based on args."""
+    import shutil as _shutil
+    bind_addr    = '0.0.0.0' if args.remote else args.host
+    package_dir  = os.path.dirname(__file__)
     frontend_dir = os.path.abspath(os.path.join(package_dir, '..', 'frontend'))
     uvicorn_path = os.path.join(os.path.dirname(sys.executable), 'uvicorn')
+    log_level    = 'info' if args.debug else 'error'
 
+    backend_cmd = [uvicorn_path, 'agentviz.server:socket_app',
+                   '--host', bind_addr, '--port', str(args.port),
+                   '--log-level', log_level]
+
+    static_dir = os.path.join(package_dir, 'static')
+    has_static  = os.path.isfile(os.path.join(static_dir, 'index.html'))
+
+    frontend_cmd = None
+    frontend_url = None
+    if not args.dev and has_static:
+        frontend_url = f"http://{bind_addr}:{args.port}  (pre-built static)"
+    elif os.path.isdir(frontend_dir):
+        if not os.path.isdir(os.path.join(frontend_dir, 'node_modules')):
+            print("  Installing frontend dependencies...")
+            subprocess.run(['npm', 'install'], cwd=frontend_dir, check=True)
+        env = os.environ.copy()
+        env['HOST']    = bind_addr
+        env['PORT']    = str(args.frontend_port)
+        env['BROWSER'] = 'none'
+        frontend_cmd = (['npm', 'start'], frontend_dir, env)
+        frontend_url = f"http://{bind_addr}:{args.frontend_port}  (dev server)"
+    else:
+        print("  Warning: no frontend found. Run 'agentviz build' to build it.")
+
+    return backend_cmd, frontend_cmd, bind_addr, frontend_url
+
+
+def _server_stop():
+    import json
+    if not os.path.isfile(_PID_FILE):
+        print("No running AgentViz server found.")
+        return
+    with open(_PID_FILE) as f:
+        state = json.load(f)
+    killed = []
+    for name, pid in state.items():
+        try:
+            os.kill(pid, 15)  # SIGTERM
+            killed.append(f"{name} (pid {pid})")
+        except ProcessLookupError:
+            pass
+    os.remove(_PID_FILE)
+    print("Stopped: " + ", ".join(killed) if killed else "Server processes already stopped.")
+
+
+def _server_start_daemon(args):
+    import json
+    _kill_stale_server(args.port)
+    backend_cmd, frontend_cmd, bind_addr, frontend_url = _server_procs(args)
+
+    os.makedirs(_STATE_DIR, exist_ok=True)
+    log = open(_LOG_FILE, 'a')
+
+    backend_proc = subprocess.Popen(backend_cmd, stdout=log, stderr=log,
+                                    start_new_session=True)
+    state = {'backend': backend_proc.pid}
+
+    if frontend_cmd:
+        cmd, cwd, env = frontend_cmd
+        fp = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log, stderr=log,
+                              start_new_session=True)
+        state['frontend'] = fp.pid
+
+    log.close()
+    with open(_PID_FILE, 'w') as f:
+        json.dump(state, f)
+
+    print(f"AgentViz server started (pid {backend_proc.pid})")
+    print(f"  Dashboard: http://{bind_addr}:{args.port}")
+    if frontend_url:
+        print(f"  Frontend:  {frontend_url}")
+    print(f"  Logs:      {_LOG_FILE}")
+    print(f"  Stop with: agentviz server stop")
+
+
+def _server_foreground(args):
+    import time
+    _kill_stale_server(args.port)
+    backend_cmd, frontend_cmd, bind_addr, frontend_url = _server_procs(args)
+
+    stdout = None if args.debug else subprocess.DEVNULL
     processes = []
 
     try:
-        # --- Start backend ---
-        backend_proc = subprocess.Popen(
-            [uvicorn_path, 'agentviz.server:socket_app',
-             '--host', bind_addr, '--port', str(args.port)],
-        )
+        backend_proc = subprocess.Popen(backend_cmd, stdout=stdout, stderr=stdout)
         processes.append(backend_proc)
         print(f"  Backend:  http://{bind_addr}:{args.port}")
+        if frontend_url:
+            print(f"  Frontend: {frontend_url}")
         if args.remote:
             print("  Remote access enabled — listening on all interfaces.")
-
-        # --- Start frontend ---
-        static_dir = os.path.join(package_dir, 'static')
-        has_static = os.path.isfile(os.path.join(static_dir, 'index.html'))
-
-        if not args.dev and has_static:
-            # Pre-built static files served by the backend — no extra process needed
-            print(f"  Frontend: http://{bind_addr}:{args.port}  (pre-built static)")
-        elif os.path.isdir(frontend_dir):
-            # Dev mode or no static build: start npm dev server with hot-reload
-            if not os.path.isdir(os.path.join(frontend_dir, 'node_modules')):
-                print("  Installing frontend dependencies...")
-                subprocess.run(['npm', 'install'], cwd=frontend_dir, check=True)
-
-            env = os.environ.copy()
-            env['HOST'] = bind_addr
-            env['PORT'] = str(args.frontend_port)
-            env['BROWSER'] = 'none'  # don't auto-open a browser
-
-            frontend_proc = subprocess.Popen(
-                ['npm', 'start'],
-                cwd=frontend_dir,
-                env=env,
-            )
-            processes.append(frontend_proc)
-            print(f"  Frontend: http://{bind_addr}:{args.frontend_port}  (dev server)")
-        else:
-            print("  Warning: no frontend found. Run 'agentviz build' to build it.")
-
         print("  Press Ctrl+C to stop.\n")
 
-        # Wait until any child exits or the user hits Ctrl+C
+        if frontend_cmd:
+            cmd, cwd, env = frontend_cmd
+            fp = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=stdout, stderr=stdout)
+            processes.append(fp)
+
         while True:
             for p in processes:
                 if p.poll() is not None:
@@ -185,25 +262,45 @@ def server(args):
                     p.kill()
         print("AgentViz stopped.")
 
+
+def server(args):
+    action = getattr(args, 'action', None)
+    if action == 'stop':
+        _server_stop()
+    elif action == 'start':
+        _server_start_daemon(args)
+    else:
+        print("Starting AgentViz server...")
+        _server_foreground(args)
+
 def run(args):
     import time
     import signal
     import socketio
 
-    agent_type = args.agent
-    agent_id = getattr(args, 'id', None) or f"{agent_type}-{os.getpid()}"
     workspace = os.path.abspath(args.w)
 
     if not os.path.isdir(workspace):
         print(f"Error: Workspace '{workspace}' does not exist or is not a directory.", file=sys.stderr)
         sys.exit(1)
 
-    if not args.agent_command:
-        print(f"Error: Missing agent command for agent '{args.agent}'.", file=sys.stderr)
-        print("Usage: agentviz run -w <workspace> <agent_type> <command...>", file=sys.stderr)
+    # Resolve shorthand (e.g. 'claude', 'gemini', 'codex') to type + command
+    resolved = _resolve_agent(args.agent)
+    if resolved:
+        agent_type, default_cmd = resolved
+        # Extra args after the shorthand name override the default command
+        agent_command = list(args.agent_command) if args.agent_command else [default_cmd]
+    else:
+        agent_type = args.agent
+        agent_command = list(args.agent_command)
+
+    if not agent_command:
+        print(f"Error: Missing agent command for '{args.agent}'.", file=sys.stderr)
+        print("Usage: agentviz run -w <workspace> <agent>  (e.g. claude, gemini, codex)", file=sys.stderr)
         sys.exit(1)
 
-    monitor = Monitor(agent_id, agent_type, args.agent_command, workspace, tmux_mode=getattr(args, 'tmux_start', False), remote_host=getattr(args, 'remote', None))
+    agent_id = getattr(args, 'id', None) or f"{agent_type}-{os.getpid()}"
+    monitor = Monitor(agent_id, agent_type, agent_command, workspace, tmux_mode=getattr(args, 'tmux_start', False), remote_host=getattr(args, 'remote', None))
     interrupted = False
     error_occurred = False
 
@@ -256,13 +353,11 @@ def run(args):
                 if sio != monitor.sio:
                     sio.disconnect()
 
-        except Exception as e:
-            print(f"[AgentViz Debug] Failed to emit agent_stopped: {e}", file=sys.stderr)
+        except Exception:
+            pass
 
     try:
-        print(f"[AgentViz Debug] Starting asyncio run for monitor.", file=sys.stderr)
         asyncio.run(monitor.run())
-        print(f"[AgentViz Debug] Asyncio run for monitor completed.", file=sys.stderr)
     except KeyboardInterrupt:
         interrupted = True
         print("\nAgent monitoring interrupted by user.")
@@ -285,14 +380,10 @@ def run(args):
         if monitor.sio.connected:
             try:
                 monitor.sio.disconnect()
-                print(f"[AgentViz Debug] SocketIO disconnected.", file=sys.stderr)
             except Exception:
                 pass
 
-        print(f"\nAgentViz finished monitoring {agent_id}.", file=sys.stderr)
-
 def main():
-    print(f"[AgentViz Debug] sys.path: {sys.path}", file=sys.stderr)
     parser = argparse.ArgumentParser(description="AgentViz: Unified Visualization for Coding Agents.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -306,13 +397,17 @@ def main():
 
     # Server Command
     parser_server = subparsers.add_parser("server", help="Start the AgentViz backend + frontend.")
-    parser_server.add_argument("--host", default="127.0.0.1", help="Host to bind both servers to (default: 127.0.0.1).")
+    parser_server.add_argument("action", nargs="?", choices=["start", "stop"],
+                               help="'start' runs as a background daemon; 'stop' kills it. Omit to run in the foreground.")
+    parser_server.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1).")
     parser_server.add_argument("--port", default=8787, type=int, help="Backend port (default: 8787).")
     parser_server.add_argument("--frontend-port", default=3000, type=int, dest="frontend_port",
                                help="Frontend dev-server port (default: 3000). Only used with --dev.")
-    parser_server.add_argument("--remote", action="store_true", help="Enable remote access (binds to 0.0.0.0 for Tailscale/LAN).")
+    parser_server.add_argument("--remote", action="store_true", help="Bind to 0.0.0.0 for Tailscale/LAN access.")
     parser_server.add_argument("--dev", action="store_true",
-                               help="Force npm start dev server even if a pre-built frontend exists.")
+                               help="Use npm start dev server instead of the pre-built frontend.")
+    parser_server.add_argument("--debug", action="store_true",
+                               help="Show verbose uvicorn and subprocess output.")
     parser_server.set_defaults(func=server)
 
     # Run Command
@@ -321,8 +416,8 @@ def main():
     parser_run.add_argument("-i", "--id", default=None, help="Custom agent ID (default: <agent_type>-<pid>).")
     parser_run.add_argument("--tmux-start", action="store_true", help="Run agent inside a tmux session with a TTYD web terminal.")
     parser_run.add_argument("--remote", metavar="HOSTNAME", default=None, help="Tailscale/LAN hostname for remote access (e.g. 'manav-macbook'). Makes ttyd URLs accessible from other devices.")
-    parser_run.add_argument("agent", help="The agent to run (e.g., 'gemini-cli', 'claude-code').")
-    parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="The command to execute the agent.")
+    parser_run.add_argument("agent", help="Agent shorthand: claude, gemini, codex. Or a custom type with an explicit command after it.")
+    parser_run.add_argument("agent_command", nargs=argparse.REMAINDER, help="Override the default command (optional for known agents).")
     parser_run.set_defaults(func=run)
 
     args = parser.parse_args()
