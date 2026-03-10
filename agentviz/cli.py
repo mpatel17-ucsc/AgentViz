@@ -77,9 +77,15 @@ def update(args):
         env.pop(var, None)
 
     try:
-        subprocess.run(['git', '-C', install_dir, 'pull', '--ff-only'], check=True)
+        # Clean generated files that would block the pull
+        import glob as _glob
+        for pyc in _glob.glob(os.path.join(install_dir, '**', '*.pyc'), recursive=True):
+            try: os.remove(pyc)
+            except OSError: pass
+        subprocess.run(['git', '-C', install_dir, 'fetch', 'origin', 'main'], check=True)
+        subprocess.run(['git', '-C', install_dir, 'reset', '--hard', 'origin/main'], check=True)
     except subprocess.CalledProcessError as e:
-        print(f"git pull failed: {e}", file=sys.stderr)
+        print(f"git update failed: {e}", file=sys.stderr)
         sys.exit(1)
 
     try:

@@ -64,7 +64,11 @@ fi
 # ---------------------------------------------------------------------------
 if [ -d "$INSTALL_DIR/.git" ]; then
   say "Updating existing repo at $INSTALL_DIR ..."
-  git -C "$INSTALL_DIR" pull --ff-only
+  # Clean generated files that confuse git (pyc cache, build artifacts)
+  find "$INSTALL_DIR" -name "*.pyc" -delete 2>/dev/null || true
+  find "$INSTALL_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+  git -C "$INSTALL_DIR" fetch origin main
+  git -C "$INSTALL_DIR" reset --hard origin/main
 else
   say "Cloning repo to $INSTALL_DIR ..."
   git clone "$REPO_URL" "$INSTALL_DIR"
