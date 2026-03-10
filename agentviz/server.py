@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import subprocess
@@ -868,6 +869,23 @@ async def launch_terminal(sid, data: dict):
         await sio.emit('agent_state', agent_store[agent_id])
         await sio.emit('launch_result', {'success': True, 'agent_id': agent_id}, to=sid)
         print(f"[BACKEND] Launched terminal {agent_id} on port {port} (session={session_name})")
+
+        async def _watch_session():
+            print(f"[BACKEND] Watching tmux session {session_name} for terminal {agent_id}")
+            try:
+                while agent_id in agent_store and agent_store[agent_id].get('state') != AgentState.COMPLETED.value:
+                    await asyncio.sleep(1)
+                    result = subprocess.run([tmux_bin, 'has-session', '-t', session_name], capture_output=True)
+                    if result.returncode != 0:
+                        new_state, _ = transition_agent_state(agent_store[agent_id], 'agent_stopped', {'reason': 'exited', 'return_code': 0})
+                        if new_state and agent_id in agent_store:
+                            await sio.emit('agent_state', agent_store[agent_id])
+                        print(f"[BACKEND] Terminal {agent_id} marked completed.")
+                        break
+            except Exception as e:
+                print(f"[BACKEND] _watch_session error for {agent_id}: {e}")
+
+        asyncio.create_task(_watch_session())
     except Exception as e:
         print(f"[BACKEND] launch_terminal error: {e}")
         await sio.emit('launch_result', {'success': False, 'error': str(e)}, to=sid)
