@@ -337,6 +337,28 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         )}
 
         {/* Control Buttons */}
+        {isTouchDevice && agent.tmux_session && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2, mt: 2 }}>
+            <IconButton
+              onPointerDown={(e) => { e.preventDefault(); handleSendKey('Up'); }}
+              sx={{ width: 52, height: 52, bgcolor: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', touchAction: 'manipulation' }}
+            >
+              <ArrowUpwardIcon />
+            </IconButton>
+            <IconButton
+              onPointerDown={(e) => { e.preventDefault(); handleSendKey('Down'); }}
+              sx={{ width: 52, height: 52, bgcolor: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', touchAction: 'manipulation' }}
+            >
+              <ArrowDownwardIcon />
+            </IconButton>
+            <IconButton
+              onPointerDown={(e) => { e.preventDefault(); handleSendKey('Enter'); }}
+              sx={{ width: 52, height: 52, bgcolor: 'rgba(59,130,246,0.25)', border: '1px solid rgba(59,130,246,0.4)', touchAction: 'manipulation' }}
+            >
+              <KeyboardReturnIcon />
+            </IconButton>
+          </Box>
+        )}
         <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
           {agent.ttyd_url && (
             <Button
