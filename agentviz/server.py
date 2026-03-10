@@ -876,7 +876,6 @@ async def launch_terminal(sid, data: dict):
                 while agent_id in agent_store and agent_store[agent_id].get('state') != AgentState.COMPLETED.value:
                     await asyncio.sleep(1)
                     result = subprocess.run([tmux_bin, 'has-session', '-t', session_name], capture_output=True)
-                    print(f"[BACKEND] tmux has-session {session_name}: returncode={result.returncode}")
                     if result.returncode != 0:
                         new_state, _ = transition_agent_state(agent_store[agent_id], 'agent_stopped', {'reason': 'exited', 'return_code': 0})
                         if new_state and agent_id in agent_store:
