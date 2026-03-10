@@ -877,6 +877,54 @@ async def launch_terminal(sid, data: dict):
 # REST API Endpoints
 # ============================================
 
+@app.get("/terminal/{agent_id}", response_class=None)
+async def terminal_page(agent_id: str):
+    """Mobile-friendly terminal page: ttyd iframe + agent controls in one window."""
+    from fastapi.responses import HTMLResponse
+    agent = agent_store.get(agent_id)
+    if not agent or not agent.get("ttyd_url"):
+        return HTMLResponse("<h3>Terminal not found or not started yet.</h3>", status_code=404)
+    ttyd_url = agent["ttyd_url"]
+    tmux_session = agent.get("tmux_session", "")
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Terminal – {agent_id}</title>
+  <style>
+    * {{ margin:0; padding:0; box-sizing:border-box; }}
+    body {{ background:#000; display:flex; flex-direction:column; height:100dvh; }}
+    #frame {{ flex:1; border:none; width:100%; }}
+    #controls {{ display:{"flex" if tmux_session else "none"}; justify-content:center; align-items:center;
+                 gap:16px; padding:10px; background:#111; border-top:1px solid #333; }}
+    button {{ width:60px; height:60px; border:none; border-radius:10px; font-size:24px;
+              color:#fff; cursor:pointer; -webkit-tap-highlight-color:transparent; }}
+    #btn-up, #btn-down {{ background:rgba(255,255,255,0.12); }}
+    #btn-enter             {{ background:rgba(59,130,246,0.4); }}
+    button:active          {{ opacity:0.6; }}
+  </style>
+</head>
+<body>
+  <iframe id="frame" src="{ttyd_url}" allow="cross-origin-isolated"></iframe>
+  <div id="controls">
+    <button id="btn-up">↑</button>
+    <button id="btn-down">↓</button>
+    <button id="btn-enter">↵</button>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const agentId = {agent_id!r};
+    const sio = io(window.location.origin);
+    function send(key) {{ sio.emit('control_send_keys', {{agent_id: agentId, key: key}}); }}
+    document.getElementById('btn-up').addEventListener('pointerdown', e => {{ e.preventDefault(); send('Up'); }});
+    document.getElementById('btn-down').addEventListener('pointerdown', e => {{ e.preventDefault(); send('Down'); }});
+    document.getElementById('btn-enter').addEventListener('pointerdown', e => {{ e.preventDefault(); send('Enter'); }});
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
 @app.get("/api/health")
 def read_root():
     return {"Hello": "AgentViz Server", "version": "2.0"}
