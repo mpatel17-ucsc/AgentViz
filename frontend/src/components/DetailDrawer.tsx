@@ -492,6 +492,7 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
       <Dialog
         open={terminalDialogOpen}
         onClose={() => setTerminalDialogOpen(false)}
+        keepMounted
         maxWidth={false}
         PaperProps={{
           sx: {
