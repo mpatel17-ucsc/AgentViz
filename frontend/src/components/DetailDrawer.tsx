@@ -336,39 +336,13 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
           </Typography>
         )}
 
-        {/* Control Buttons */}
-        {isTouchDevice && agent.tmux_session && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2, mt: 2 }}>
-            <IconButton
-              onPointerDown={(e) => { e.preventDefault(); handleSendKey('Up'); }}
-              sx={{ width: 52, height: 52, bgcolor: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', touchAction: 'manipulation' }}
-            >
-              <ArrowUpwardIcon />
-            </IconButton>
-            <IconButton
-              onPointerDown={(e) => { e.preventDefault(); handleSendKey('Down'); }}
-              sx={{ width: 52, height: 52, bgcolor: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', touchAction: 'manipulation' }}
-            >
-              <ArrowDownwardIcon />
-            </IconButton>
-            <IconButton
-              onPointerDown={(e) => { e.preventDefault(); handleSendKey('Enter'); }}
-              sx={{ width: 52, height: 52, bgcolor: 'rgba(59,130,246,0.25)', border: '1px solid rgba(59,130,246,0.4)', touchAction: 'manipulation' }}
-            >
-              <KeyboardReturnIcon />
-            </IconButton>
-          </Box>
-        )}
         <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
           {agent.ttyd_url && (
             <Button
               variant="outlined"
               size="small"
               startIcon={<TerminalIcon />}
-              onClick={() => isTouchDevice
-                ? window.open(resolveTerminalUrl(agent.ttyd_url!), '_blank')
-                : setTerminalDialogOpen(true)
-              }
+              onClick={() => setTerminalDialogOpen(true)}
               color="info"
             >
               Open Terminal
@@ -520,10 +494,12 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
         maxWidth={false}
         PaperProps={{
           sx: {
-            width: '80vw',
-            height: '70vh',
+            width: '90vw',
+            height: '80vh',
             bgcolor: '#1a1a1a',
             backgroundImage: 'none',
+            display: 'flex',
+            flexDirection: 'column',
           },
         }}
       >
@@ -552,17 +528,23 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
             <CloseIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </DialogTitle>
-        <DialogContent sx={{ p: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          <iframe
-            src={resolveTerminalUrl(agent.ttyd_url!)}
-            style={{
-              width: '100%',
-              flex: 1,
-              border: 'none',
-              backgroundColor: '#000',
-            }}
-            title={`Terminal for ${agent.id}`}
-          />
+        <DialogContent sx={{ p: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+          {/* Proxy URL keeps the iframe same-origin (port 8787) so iOS Safari
+              allows the WebSocket. position:absolute is required for iOS flex sizing. */}
+          <Box sx={{ flex: 1, minHeight: 0, position: 'relative' }}>
+            <iframe
+              src={`/ttyd-proxy/${agent.id}`}
+              style={{
+                position: 'absolute',
+                top: 0, left: 0, right: 0, bottom: 0,
+                width: '100%',
+                height: '100%',
+                border: 'none',
+                backgroundColor: '#000',
+              }}
+              title={`Terminal for ${agent.id}`}
+            />
+          </Box>
           {isTouchDevice && agent.tmux_session && (
             <Box
               sx={{

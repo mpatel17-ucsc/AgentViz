@@ -31,3 +31,7 @@ Thumbs.db
 # Env files
 .env
 .env.local
+
+# Temporary hook configs written by agentviz run (restored on exit, gitignored as safety net)
+.claude/settings.local.json
+.gemini/settings.json
