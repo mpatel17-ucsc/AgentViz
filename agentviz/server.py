@@ -877,7 +877,7 @@ async def launch_terminal(sid, data: dict):
 # REST API Endpoints
 # ============================================
 
-@app.get("/")
+@app.get("/api/health")
 def read_root():
     return {"Hello": "AgentViz Server", "version": "2.0"}
 
