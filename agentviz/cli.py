@@ -64,6 +64,8 @@ def _build_frontend(frontend_dir, install_dir):
     if os.path.isdir(static_dir):
         shutil.rmtree(static_dir)
     shutil.copytree(build_dir, static_dir)
+    # Restore .gitkeep so git doesn't show the file as deleted after every build
+    open(os.path.join(static_dir, '.gitkeep'), 'w').close()
     print(f"Frontend built and copied to {static_dir}")
     return True
 

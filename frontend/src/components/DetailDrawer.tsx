@@ -519,7 +519,7 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
           </Typography>
           <IconButton
             size="small"
-            onClick={() => window.open(resolveTerminalUrl(agent.ttyd_url!), '_blank')}
+            onClick={() => window.open(`/ttyd-proxy/${agent.id}`, '_blank')}
             title="Open in new tab"
           >
             <OpenInNewIcon sx={{ fontSize: 18 }} />
