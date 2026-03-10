@@ -343,7 +343,10 @@ export const DetailDrawer: React.FC<DetailDrawerProps> = ({ socket, events }) =>
               variant="outlined"
               size="small"
               startIcon={<TerminalIcon />}
-              onClick={() => setTerminalDialogOpen(true)}
+              onClick={() => isTouchDevice
+                ? window.open(resolveTerminalUrl(agent.ttyd_url!), '_blank')
+                : setTerminalDialogOpen(true)
+              }
               color="info"
             >
               Open Terminal
