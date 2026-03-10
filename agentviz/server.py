@@ -1,10 +1,12 @@
+import asyncio
 import os
 import json
 import subprocess
 import shutil
 import socketio
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, WebSocket as FastAPIWebSocket
+from fastapi.responses import Response as FastAPIResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, List, Optional
 from enum import Enum
@@ -868,6 +870,33 @@ async def launch_terminal(sid, data: dict):
         await sio.emit('agent_state', agent_store[agent_id])
         await sio.emit('launch_result', {'success': True, 'agent_id': agent_id}, to=sid)
         print(f"[BACKEND] Launched terminal {agent_id} on port {port} (session={session_name})")
+
+        # Watch for tmux session exit and transition to completed
+        async def _watch_session(aid: str, sess: str):
+            tmux = shutil.which("tmux")
+            if not tmux:
+                return
+            while True:
+                await asyncio.sleep(2)
+                if aid not in agent_store:
+                    return
+                result = subprocess.run(
+                    [tmux, "has-session", "-t", sess],
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    # Session gone — transition to completed
+                    agent = agent_store.get(aid)
+                    if agent and agent["state"] != AgentState.COMPLETED.value:
+                        agent["state"] = AgentState.COMPLETED.value
+                        agent["completed_at"] = time.time()
+                        agent["last_message"] = "Terminal session ended"
+                        agent["needs_attention"] = False
+                        await sio.emit('agent_state', agent)
+                        print(f"[BACKEND] Terminal {aid} session ended, moved to COMPLETED")
+                    return
+
+        asyncio.create_task(_watch_session(agent_id, session_name))
     except Exception as e:
         print(f"[BACKEND] launch_terminal error: {e}")
         await sio.emit('launch_result', {'success': False, 'error': str(e)}, to=sid)
@@ -877,7 +906,126 @@ async def launch_terminal(sid, data: dict):
 # REST API Endpoints
 # ============================================
 
-@app.get("/terminal/{agent_id}", response_class=None)
+async def proxy_ttyd_http(request: Request, agent_id: str, path: str = ""):
+    """Proxy ttyd HTTP assets through port 8787 (same origin) so iOS Safari allows the iframe."""
+    import httpx
+    from fastapi.responses import HTMLResponse as _HTMLResponse
+    agent = agent_store.get(agent_id)
+    if not agent or not agent.get("ttyd_url"):
+        return _HTMLResponse("Terminal not found", status_code=404)
+
+    base = agent["ttyd_url"].rstrip("/")
+    target = f"{base}/{path}" if path else base + "/"
+    qs = request.url.query
+    if qs:
+        target += "?" + qs
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+            resp = await client.get(target)
+    except Exception as e:
+        return _HTMLResponse(f"Proxy error: {e}", status_code=502)
+
+    content = resp.content
+    ct = resp.headers.get("content-type", "")
+
+    # For the root HTML only: inject a script that redirects the WebSocket and
+    # token fetch through our same-origin proxy endpoints.
+    if not path and "html" in ct:
+        override = f"""<script>
+(function(){{
+  var _WS = window.WebSocket;
+  window.WebSocket = function(url, protocols) {{
+    if (typeof url === 'string' && /\\/ws(\\?|$)/.test(url)) {{
+      var qs = url.indexOf('?') >= 0 ? url.slice(url.indexOf('?')) : '';
+      url = (location.protocol==='https:'?'wss://':'ws://') + location.host + '/ttyd-proxy/{agent_id}/ws' + qs;
+    }}
+    return new _WS(url, protocols);
+  }};
+  window.WebSocket.CONNECTING=0; window.WebSocket.OPEN=1;
+  window.WebSocket.CLOSING=2;   window.WebSocket.CLOSED=3;
+  var _fetch = window.fetch;
+  window.fetch = function(input, init) {{
+    if (typeof input === 'string' && input === '/token') {{
+      input = '/ttyd-proxy/{agent_id}/token';
+    }}
+    return _fetch(input, init);
+  }};
+}})();
+</script>""".encode()
+        if b"</head>" in content:
+            content = content.replace(b"</head>", override + b"</head>", 1)
+        else:
+            content = override + content
+
+    skip = {"content-encoding", "transfer-encoding", "content-length", "content-security-policy"}
+    headers = {k: v for k, v in resp.headers.items() if k.lower() not in skip}
+    media_type = ct.split(";")[0].strip() if ct else None
+    return FastAPIResponse(content=content, status_code=resp.status_code,
+                           headers=headers, media_type=media_type)
+
+# Register both paths (with and without trailing path segment)
+app.add_api_route("/ttyd-proxy/{agent_id}", proxy_ttyd_http, methods=["GET"])
+app.add_api_route("/ttyd-proxy/{agent_id}/{path:path}", proxy_ttyd_http, methods=["GET"])
+
+
+@app.websocket("/ttyd-proxy/{agent_id}/ws")
+async def proxy_ttyd_ws(websocket: FastAPIWebSocket, agent_id: str):
+    """Proxy ttyd WebSocket through port 8787 (same origin) so iOS Safari allows it."""
+    import websockets as _ws
+    agent = agent_store.get(agent_id)
+    if not agent or not agent.get("ttyd_url"):
+        await websocket.close(1008)
+        return
+
+    qs = str(websocket.query_params)
+    ttyd_ws = agent["ttyd_url"].replace("http://", "ws://").rstrip("/") + "/ws"
+    if qs:
+        ttyd_ws += "?" + qs
+
+    proto_header = websocket.headers.get("sec-websocket-protocol", "")
+    subprotocols = [s.strip() for s in proto_header.split(",") if s.strip()] or ["tty"]
+
+    try:
+        await websocket.accept(subprotocol=subprotocols[0])
+    except Exception:
+        await websocket.accept()
+
+    try:
+        async with _ws.connect(ttyd_ws, subprotocols=subprotocols) as upstream:
+            async def c2u():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg.get("bytes") is not None:
+                            await upstream.send(msg["bytes"])
+                        elif msg.get("text") is not None:
+                            await upstream.send(msg["text"])
+                        elif msg.get("type") == "websocket.disconnect":
+                            break
+                except Exception:
+                    pass
+
+            async def u2c():
+                try:
+                    async for msg in upstream:
+                        if isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except Exception:
+                    pass
+
+            await asyncio.gather(c2u(), u2c())
+    except Exception as e:
+        print(f"[BACKEND] ttyd proxy WS error for {agent_id}: {e}")
+        try:
+            await websocket.close(1011)
+        except Exception:
+            pass
+
+
+@app.get("/api/terminal/{agent_id}")
 async def terminal_page(agent_id: str):
     """Mobile-friendly terminal page: ttyd iframe + agent controls in one window."""
     from fastapi.responses import HTMLResponse
@@ -886,16 +1034,17 @@ async def terminal_page(agent_id: str):
         return HTMLResponse("<h3>Terminal not found or not started yet.</h3>", status_code=404)
     ttyd_url = agent["ttyd_url"]
     tmux_session = agent.get("tmux_session", "")
+    controls_display = "flex" if tmux_session else "none"
     html = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>Terminal – {agent_id}</title>
+  <title>Terminal \u2013 {agent_id}</title>
   <style>
     * {{ margin:0; padding:0; box-sizing:border-box; }}
     body {{ background:#000; display:flex; flex-direction:column; height:100dvh; }}
     #frame {{ flex:1; border:none; width:100%; }}
-    #controls {{ display:{"flex" if tmux_session else "none"}; justify-content:center; align-items:center;
+    #controls {{ display:{controls_display}; justify-content:center; align-items:center;
                  gap:16px; padding:10px; background:#111; border-top:1px solid #333; }}
     button {{ width:60px; height:60px; border:none; border-radius:10px; font-size:24px;
               color:#fff; cursor:pointer; -webkit-tap-highlight-color:transparent; }}
@@ -905,14 +1054,19 @@ async def terminal_page(agent_id: str):
   </style>
 </head>
 <body>
-  <iframe id="frame" src="{ttyd_url}" allow="cross-origin-isolated"></iframe>
+  <iframe id="frame" src="" allow="cross-origin-isolated"></iframe>
   <div id="controls">
-    <button id="btn-up">↑</button>
-    <button id="btn-down">↓</button>
-    <button id="btn-enter">↵</button>
+    <button id="btn-up">\u2191</button>
+    <button id="btn-down">\u2193</button>
+    <button id="btn-enter">\u21b5</button>
   </div>
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // Resolve localhost -> actual hostname so Tailscale/LAN devices work
+    const rawUrl = {ttyd_url!r};
+    const ttydUrl = rawUrl.replace(/^(https?:\/\/)(localhost|127\\.0\\.0\\.1)/, '$1' + window.location.hostname);
+    document.getElementById('frame').src = ttydUrl;
+
     const agentId = {agent_id!r};
     const sio = io(window.location.origin);
     function send(key) {{ sio.emit('control_send_keys', {{agent_id: agentId, key: key}}); }}
