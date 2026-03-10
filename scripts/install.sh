@@ -4,9 +4,8 @@
 # Usage:
 #   curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh -s -- [INSTALL_DIR]
 #
-# INSTALL_DIR defaults to ~/.local/share/agentviz (XDG) when ~/.local exists,
-# otherwise ~/agentviz. The agentviz wrapper is placed in ~/.local/bin or
-# <INSTALL_DIR>/bin respectively.
+# INSTALL_DIR defaults to ~/.local/share/agentviz (XDG standard).
+# The agentviz wrapper is always placed in ~/.local/bin.
 
 set -eu
 
@@ -15,18 +14,18 @@ REPO_URL="https://github.com/mpatel17-ucsc/AgentViz.git"
 # ---------------------------------------------------------------------------
 # Resolve install and bin directories
 # ---------------------------------------------------------------------------
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 if [ -z "${1:-}" ]; then
-  INSTALL_DIR="$PWD/agentviz"
+  INSTALL_DIR="$XDG_DATA_HOME/agentviz"
 else
-  INSTALL_DIR="$1"
+  # Expand leading ~ manually (POSIX sh does not expand ~ in assignments)
+  case "$1" in
+    "~"/*) INSTALL_DIR="$HOME/${1#\~/}" ;;
+    "~")   INSTALL_DIR="$HOME" ;;
+    *)     INSTALL_DIR="$1" ;;
+  esac
 fi
 BIN_DIR="$HOME/.local/bin"
-
-# Expand leading ~ manually in INSTALL_DIR (POSIX sh does not expand ~ in assignments)
-case "$INSTALL_DIR" in
-  "~"/*) INSTALL_DIR="$HOME/${INSTALL_DIR#\~/}" ;;
-  "~")   INSTALL_DIR="$HOME" ;;
-esac
 
 say() { printf "==> %s\n" "$*"; }
 err() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
@@ -100,8 +99,8 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 if command -v npm >/dev/null 2>&1; then
-  say "Installing frontend dependencies (npm install)..."
-  npm install --prefix frontend --silent
+  say "Building frontend (npm install + npm run build)..."
+  "$INSTALL_DIR/.venv/bin/agentviz" build
 fi
 
 # ---------------------------------------------------------------------------
@@ -153,14 +152,11 @@ echo ""
 echo "Verify:"
 echo "    agentviz --help"
 echo ""
-echo "Quick start (3 terminals):"
-echo "    # Terminal 1 — backend"
-echo "    agentviz server --remote"
+echo "Quick start (2 terminals):"
+echo "    # Terminal 1 — server (backend + frontend)"
+echo "    agentviz server                        # local only"
+echo "    agentviz server --remote               # expose to Tailscale/LAN"
 echo ""
-echo "    # Terminal 2 — frontend"
-echo "    cd $INSTALL_DIR/frontend"
-echo "    HOST=0.0.0.0 npm start"
-echo ""
-echo "    # Terminal 3 — agent"
+echo "    # Terminal 2 — agent"
 echo "    agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> gemini-cli /opt/homebrew/bin/gemini"
 echo ""

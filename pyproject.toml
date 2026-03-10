@@ -12,6 +12,7 @@ dependencies = [
     # Backend server
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
+    "aiofiles>=23.0.0",
     "pydantic>=2.0.0",
     "python-socketio>=5.10.0",
     "websockets",
@@ -29,3 +30,5 @@ agentviz = "agentviz.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentviz"]
+# Include the pre-built frontend static files (created by `agentviz build`)
+artifacts = ["agentviz/static/**"]

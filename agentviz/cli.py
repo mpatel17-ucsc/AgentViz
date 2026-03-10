@@ -24,6 +24,48 @@ def _kill_stale_server(port=8787):
     except Exception:
         pass
 
+def _build_frontend(frontend_dir, install_dir):
+    """Build the React frontend and copy the output into agentviz/static/."""
+    import shutil
+    print("Building frontend...")
+    env = os.environ.copy()
+    env['CI'] = 'false'  # CRA treats warnings as errors when CI=true
+    result = subprocess.run(['npm', 'run', 'build'], cwd=frontend_dir, env=env)
+    if result.returncode != 0:
+        print("Frontend build failed.", file=sys.stderr)
+        return False
+
+    build_dir = os.path.join(frontend_dir, 'build')
+    static_dir = os.path.join(install_dir, 'agentviz', 'static')
+
+    if os.path.isdir(static_dir):
+        shutil.rmtree(static_dir)
+    shutil.copytree(build_dir, static_dir)
+    print(f"Frontend built and copied to {static_dir}")
+    return True
+
+
+def build(args):
+    """Build the React frontend and embed it into the package for single-port serving."""
+    install_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    frontend_dir = os.path.join(install_dir, 'frontend')
+
+    if not os.path.isdir(frontend_dir):
+        print("Error: frontend/ directory not found. This command must be run from the repo.", file=sys.stderr)
+        sys.exit(1)
+
+    if subprocess.run(['npm', '--version'], capture_output=True).returncode != 0:
+        print("Error: npm not found. Install Node.js to build the frontend.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isdir(os.path.join(frontend_dir, 'node_modules')):
+        print("Installing frontend dependencies...")
+        subprocess.run(['npm', 'install'], cwd=frontend_dir, check=True)
+
+    if _build_frontend(frontend_dir, install_dir):
+        print("Done. Run 'agentviz server' to start.")
+
+
 def update(args):
     """Pull the latest code and reinstall Python + frontend dependencies."""
     # Resolve the repo root: this file lives at <root>/agentviz/cli.py
@@ -52,37 +94,90 @@ def update(args):
         ['npm', '--version'], capture_output=True
     ).returncode == 0:
         subprocess.run(['npm', 'install', '--prefix', frontend_dir, '--silent'], check=True)
+        _build_frontend(frontend_dir, install_dir)
 
     print("AgentViz updated successfully.")
 
 
 def server(args):
+    import time
+
     print("Starting AgentViz server...")
 
+    bind_addr = '0.0.0.0' if args.remote else args.host
+
     # Kill any stale server still holding the port from a previous run
-    _kill_stale_server(8787)
+    _kill_stale_server(args.port)
+
+    package_dir = os.path.dirname(__file__)  # .../agentviz/
+    frontend_dir = os.path.abspath(os.path.join(package_dir, '..', 'frontend'))
+    uvicorn_path = os.path.join(os.path.dirname(sys.executable), 'uvicorn')
+
+    processes = []
 
     try:
-        backend_dir = os.path.join(os.path.dirname(__file__), '..', 'backend')
-        uvicorn_path = os.path.join(os.path.dirname(sys.executable), 'uvicorn')
-
-        # --remote overrides bind to 0.0.0.0 so other devices on Tailscale/LAN can connect
-        bind_addr = '0.0.0.0' if args.remote else args.bind
-
-        print(f"AgentViz server running at http://{bind_addr}:8787 (Ctrl+C to stop)")
-        if args.remote:
-            print("Remote access enabled — server listening on all interfaces.")
-
-        # Run server in the foreground so Ctrl+C kills it cleanly
-        subprocess.run(
-            [uvicorn_path, 'main:socket_app', '--host', bind_addr, '--port', '8787'],
-            cwd=backend_dir
+        # --- Start backend ---
+        backend_proc = subprocess.Popen(
+            [uvicorn_path, 'agentviz.server:socket_app',
+             '--host', bind_addr, '--port', str(args.port)],
         )
+        processes.append(backend_proc)
+        print(f"  Backend:  http://{bind_addr}:{args.port}")
+        if args.remote:
+            print("  Remote access enabled — listening on all interfaces.")
+
+        # --- Start frontend ---
+        static_dir = os.path.join(package_dir, 'static')
+        has_static = os.path.isfile(os.path.join(static_dir, 'index.html'))
+
+        if not args.dev and has_static:
+            # Pre-built static files served by the backend — no extra process needed
+            print(f"  Frontend: http://{bind_addr}:{args.port}  (pre-built static)")
+        elif os.path.isdir(frontend_dir):
+            # Dev mode or no static build: start npm dev server with hot-reload
+            if not os.path.isdir(os.path.join(frontend_dir, 'node_modules')):
+                print("  Installing frontend dependencies...")
+                subprocess.run(['npm', 'install'], cwd=frontend_dir, check=True)
+
+            env = os.environ.copy()
+            env['HOST'] = bind_addr
+            env['PORT'] = str(args.frontend_port)
+            env['BROWSER'] = 'none'  # don't auto-open a browser
+
+            frontend_proc = subprocess.Popen(
+                ['npm', 'start'],
+                cwd=frontend_dir,
+                env=env,
+            )
+            processes.append(frontend_proc)
+            print(f"  Frontend: http://{bind_addr}:{args.frontend_port}  (dev server)")
+        else:
+            print("  Warning: no frontend found. Run 'agentviz build' to build it.")
+
+        print("  Press Ctrl+C to stop.\n")
+
+        # Wait until any child exits or the user hits Ctrl+C
+        while True:
+            for p in processes:
+                if p.poll() is not None:
+                    print(f"\nA server process exited (code {p.returncode}). Shutting down...")
+                    return
+            time.sleep(0.5)
+
     except KeyboardInterrupt:
-        print("\nAgentViz server stopped.")
+        print("\nShutting down AgentViz...")
     except Exception as e:
         print(f"Failed to start server: {e}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        for p in processes:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+        print("AgentViz stopped.")
 
 def run(args):
     import time
@@ -195,14 +290,23 @@ def main():
     parser = argparse.ArgumentParser(description="AgentViz: Unified Visualization for Coding Agents.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # Build Command
+    parser_build = subparsers.add_parser("build", help="Build the React frontend and embed it in the package (for single-port serving).")
+    parser_build.set_defaults(func=build)
+
     # Update Command
     parser_update = subparsers.add_parser("update", help="Pull the latest AgentViz code and reinstall dependencies.")
     parser_update.set_defaults(func=update)
 
     # Server Command
-    parser_server = subparsers.add_parser("server", help="Start the AgentViz backend server.")
-    parser_server.add_argument("--bind", default="127.0.0.1", help="Address to bind the server to.")
+    parser_server = subparsers.add_parser("server", help="Start the AgentViz backend + frontend.")
+    parser_server.add_argument("--host", default="127.0.0.1", help="Host to bind both servers to (default: 127.0.0.1).")
+    parser_server.add_argument("--port", default=8787, type=int, help="Backend port (default: 8787).")
+    parser_server.add_argument("--frontend-port", default=3000, type=int, dest="frontend_port",
+                               help="Frontend dev-server port (default: 3000). Only used with --dev.")
     parser_server.add_argument("--remote", action="store_true", help="Enable remote access (binds to 0.0.0.0 for Tailscale/LAN).")
+    parser_server.add_argument("--dev", action="store_true",
+                               help="Force npm start dev server even if a pre-built frontend exists.")
     parser_server.set_defaults(func=server)
 
     # Run Command

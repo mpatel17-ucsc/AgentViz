@@ -19,7 +19,7 @@ AgentViz is a local dashboard and event pipeline for visualizing coding agents (
 2. Restart your machine, then open the WSL terminal (Ubuntu by default).
 3. Follow the Quick Install steps below from inside WSL.
 
-The backend and frontend run normally inside WSL, and you can access the dashboard from your Windows browser at `http://localhost:3000`.
+The backend and frontend run normally inside WSL, and you can access the dashboard from your Windows browser at `http://localhost:8787`.
 
 ---
 
@@ -29,25 +29,16 @@ The backend and frontend run normally inside WSL, and you can access the dashboa
 curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh
 ```
 
-Run this from whatever directory you want AgentViz installed in — the repo clones to an `agentviz/` folder there:
-
-```bash
-# e.g. from ~/Documents → installs to ~/Documents/agentviz
-cd ~/Documents
-curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh
-```
-
 **Requires `git`** — install it first if needed (`xcode-select --install` on macOS, `sudo apt-get install -y git` on Ubuntu/WSL).
 
 This single command:
 - Installs `uv` if not already present
-- Clones the repo to `agentviz/` in your current directory
-- Creates a project-local Python venv and installs all dependencies
-- Installs Node.js via `nvm` if `node`/`npm` is not found, then installs frontend dependencies
-- Writes an `agentviz` wrapper to `~/.local/bin/` — no manual venv activation ever needed
+- Clones the repo to `~/.local/share/agentviz` (standard XDG data directory — no clutter in your working directory)
+- Creates a Python venv, installs all dependencies, and builds the frontend
+- Writes an `agentviz` wrapper to `~/.local/bin/` so you can run `agentviz` from any directory
 - Asks if you want `~/.local/bin` added to `PATH` in your shell rc automatically
 
-To install to a specific path instead:
+To install to a custom path instead:
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh -s -- ~/my-agentviz
@@ -123,7 +114,7 @@ pip install -e .
 ### Frontend Setup
 
 ```bash
-npm install --prefix frontend
+agentviz build   # npm install + npm run build → bundles frontend into the package
 ```
 
 Verify everything works:
@@ -150,20 +141,23 @@ Examples:
 
 ### `agentviz server`
 
-Starts the backend server (Socket.IO + API) on port `8787`.
+Starts the backend **and** frontend together.
 
 ```bash
-agentviz server [--bind <ip>] [--remote]
+agentviz server [--host <ip>] [--port <n>] [--remote] [--dev]
 ```
 
 All flags are optional — running `agentviz server` with no flags works for local-only use.
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--remote` | No | Binds to `0.0.0.0` so other devices (phone, tablet) can reach the backend. Use this for Tailscale/LAN access. |
-| `--bind <ip>` | No | Bind to a specific IP instead. Default is `127.0.0.1` (localhost only). |
+| `--remote` | No | Binds to `0.0.0.0` so other devices (phone, tablet) can reach the server. Use this for Tailscale/LAN access. |
+| `--host <ip>` | No | Bind to a specific IP. Default is `127.0.0.1` (localhost only). |
+| `--port <n>` | No | Backend port. Default is `8787`. |
+| `--dev` | No | Force the React dev server (`npm start`) even if a pre-built frontend exists. Enables hot-reload for frontend development. Sets the dev-server host to whatever `--host` is. |
+| `--frontend-port <n>` | No | Dev-server port (default `3000`). Only used with `--dev`. |
 
-Backend is always on port `8787`.
+After installation the frontend is pre-built and served by the backend on the same port (`8787`). No separate `npm start` is needed.
 
 ### `agentviz run`
 
@@ -207,21 +201,15 @@ No flags needed. Run this whenever you want to upgrade to the latest version.
 
 ## Running AgentViz
 
-Open **3 terminal tabs** and run one command in each.
+Open **2 terminal tabs** and run one command in each.
 
-**Tab 1 — Backend**
+**Tab 1 — Server (backend + frontend)**
 ```bash
-agentviz server --remote
+agentviz server          # local only  → open http://localhost:8787
+agentviz server --remote # Tailscale   → open http://<TAILSCALE_IP>:8787
 ```
 
-**Tab 2 — Frontend**
-```bash
-cd agentviz/frontend   # relative to wherever you ran curl
-HOST=0.0.0.0 npm start
-```
-> `HOST=0.0.0.0` makes the dashboard reachable from your phone over Tailscale/LAN.
-
-**Tab 3 — Agent**
+**Tab 2 — Agent**
 
 Pick the command for the agent you want to run. Replace `<WORKSPACE>` with the directory the agent should work in, and `<TAILSCALE_IP>` with your Tailscale IP or hostname.
 
@@ -258,22 +246,21 @@ Use that IP (or your Tailscale hostname) as `<TAILSCALE_IP_OR_HOSTNAME>`.
 
 1. Install Tailscale and sign into the same tailnet.
 2. Confirm the phone is connected to Tailscale.
-3. Open the frontend in Safari/Chrome:
+3. Open the dashboard in Safari/Chrome:
 
 ```text
-http://<TAILSCALE_IP_OR_HOSTNAME>:3000
+http://<TAILSCALE_IP_OR_HOSTNAME>:8787
 ```
 
 Example:
 
 ```text
-http://100.x.x.x:3000
+http://100.x.x.x:8787
 ```
 
 Notes:
 
-- `:3000` is the React frontend dev server
-- The frontend connects to backend port `8787` automatically using the same host shown in the browser URL
+- `:8787` is the single port for both the API and the frontend
 - Per-agent `ttyd` terminals use dynamically assigned ports (AgentViz publishes those links in the dashboard)
 
 ## Benchmarks
@@ -295,12 +282,12 @@ AgentViz was benchmarked against [TmuxCC](https://github.com/nyanko3141592/tmuxc
   - Install both system tools (`brew install tmux ttyd`)
   - `--tmux-start` requires both
 
-- Phone can open frontend but dashboard shows disconnected
-  - Make sure backend was started with `agentviz server --remote`
+- Phone can open dashboard but shows disconnected
+  - Make sure server was started with `agentviz server --remote`
   - Confirm port `8787` is reachable on your Tailscale IP
 
-- Phone cannot open `http://<ip>:3000`
-  - Make sure frontend was started with `HOST=0.0.0.0 npm start` from the `agentviz/frontend/` directory
+- Phone cannot open `http://<ip>:8787`
+  - Make sure server was started with `agentviz server --remote`
   - Confirm laptop and phone are on the same Tailscale tailnet
 
 - Agent settings files are modified unexpectedly
