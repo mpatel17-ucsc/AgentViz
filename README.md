@@ -1,6 +1,6 @@
 # AgentViz
 
-AgentViz is a local dashboard and event pipeline for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, and others) while they run in a workspace. It includes a Python backend (FastAPI + Socket.IO), a React frontend dashboard, per-agent adapters, optional `tmux` + `ttyd` web terminals, and remote viewing support over Tailscale/LAN.
+AgentViz is a local dashboard for visualizing coding agents (Gemini CLI, Claude Code, Codex CLI, and others) while they run in a workspace. It includes a Python backend (FastAPI + Socket.IO), a React frontend dashboard, per-agent adapters, optional `tmux` + `ttyd` web terminals, and remote viewing support over Tailscale/LAN.
 
 ![AgentViz Dashboard](images/AgentVizDashboard.png)
 ![AgentViz Agent Detail View](images/AgentVizLaunchAgent.png)
@@ -33,12 +33,12 @@ curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts
 
 This single command:
 - Installs `uv` if not already present
-- Clones the repo to `~/.local/share/agentviz` (standard XDG data directory — no clutter in your working directory)
+- Clones the repo to `~/.local/share/agentviz` (standard XDG location — nothing written to your working directory)
 - Creates a Python venv, installs all dependencies, and builds the frontend
-- Writes an `agentviz` wrapper to `~/.local/bin/` so you can run `agentviz` from any directory
+- Writes an `agentviz` wrapper to `~/.local/bin/` so you can run `agentviz` from **any directory**
 - Asks if you want `~/.local/bin` added to `PATH` in your shell rc automatically
 
-To install to a custom path instead:
+To install to a custom path:
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/mpatel17-ucsc/AgentViz/main/scripts/install.sh | sh -s -- ~/my-agentviz
@@ -50,10 +50,9 @@ If the installer didn't update your shell rc, add this manually:
 export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
 ```
 
-
 > **Note:** `tmux` and `ttyd` are system tools the installer does not manage — install them separately if you plan to use `--tmux-start`:
 > - **macOS:** `brew install tmux ttyd`
-> - **Ubuntu/WSL:** `sudo apt-get install -y tmux` — for `ttyd`, download the binary from [github.com/tsl0922/ttyd/releases](https://github.com/tsl0922/ttyd/releases): `curl -LO https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 && chmod +x ttyd.x86_64 && sudo mv ttyd.x86_64 /usr/local/bin/ttyd`
+> - **Ubuntu/WSL:** `sudo apt-get install -y tmux` — for `ttyd`, download from [github.com/tsl0922/ttyd/releases](https://github.com/tsl0922/ttyd/releases): `curl -LO https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 && chmod +x ttyd.x86_64 && sudo mv ttyd.x86_64 /usr/local/bin/ttyd`
 
 ## Features
 
@@ -64,204 +63,161 @@ export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
 - `tmux` + `ttyd` web terminal access for each agent session
 - Remote dashboard + web terminal access (Tailscale/LAN)
 
-## Manual Setup (alternative to Quick Install)
+## Running AgentViz
 
-> **Note:** If you used the quick installer above, skip this section — the `agentviz` wrapper script activates its own environment automatically.
+Open **2 terminal tabs**.
 
-### System tools
-
-- `python` 3.10+
-- `node` + `npm` (for the frontend)
-- `tmux` (required for `--tmux-start`)
-- `ttyd` (required for `--tmux-start`)
-- `git`
-
-macOS (Homebrew) example:
-
+**Tab 1 — Server**
 ```bash
-brew install tmux ttyd
+agentviz server           # local only  → open http://localhost:8787
+agentviz server --remote  # Tailscale   → open http://<TAILSCALE_IP>:8787
 ```
 
-### Coding agent CLIs (install + authenticate separately)
+This starts the backend and frontend together on port `8787`. No separate `npm start` needed.
 
-Install the agent CLI(s) you want to monitor and make sure they run from your shell (or use an absolute path in the command).
+**Tab 2 — Agent**
 
-- Gemini CLI (`gemini` or your local binary path)
-- Claude Code (`claude`)
-- Codex CLI (`codex`)
-
-AgentViz does not install these CLIs for you.
-
-### Python Setup
-
-**Preferred — using `uv` (fastest, reproducible):**
+Replace `<WORKSPACE>` with the directory the agent should work in.
 
 ```bash
-uv sync                    # creates .venv, installs all deps + agentviz CLI
-source .venv/bin/activate  # activate venv so `agentviz` is on PATH
+# Claude Code
+agentviz run -w <WORKSPACE> claude
+agentviz run -w <WORKSPACE> --tmux-start claude
+
+# Gemini CLI
+agentviz run -w <WORKSPACE> gemini
+agentviz run -w <WORKSPACE> --tmux-start gemini
+
+# Codex CLI
+agentviz run -w <WORKSPACE> codex
+agentviz run -w <WORKSPACE> --tmux-start codex
 ```
 
-**Alternative — using pip:**
+> For Tailscale/LAN phone access, add `--remote <TAILSCALE_IP>` to the run command so ttyd terminal links use the right host.
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install -e .
-```
-
-### Frontend Setup
-
-```bash
-agentviz build   # npm install + npm run build → bundles frontend into the package
-```
-
-Verify everything works:
-
-```bash
-agentviz --help
-```
-
-## Agent CLI Setup (Gemini / Claude / Codex)
-
-### Prerequisites per CLI
-
-- Install the CLI
-- Authenticate (vendor login/auth flow)
-- Ensure the executable is on `PATH` or use an absolute path
-
-Examples:
-
-- `gemini` or `/opt/homebrew/bin/gemini`
-- `claude`
-- `codex`
-
-## CLI Commands and Flags
+## CLI Reference
 
 ### `agentviz server`
 
-Starts the backend **and** frontend together.
+Starts the backend and frontend together on a single port.
 
 ```bash
-agentviz server [--host <ip>] [--port <n>] [--remote] [--dev]
+agentviz server           # foreground — Ctrl+C to stop
+agentviz server start     # background daemon
+agentviz server stop      # stop the background daemon
 ```
 
-All flags are optional — running `agentviz server` with no flags works for local-only use.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host <ip>` | `127.0.0.1` | IP address to bind to. |
+| `--port <n>` | `8787` | Port for the server. |
+| `--remote` | off | Bind to `0.0.0.0` so other devices (Tailscale/LAN) can reach it. |
+| `--debug` | off | Show verbose uvicorn and subprocess output. Without it the server runs quietly. |
+| `--dev` | off | Use the React dev server (`npm start`) instead of the pre-built frontend. Enables hot-reload for frontend development. |
+| `--frontend-port <n>` | `3000` | Dev server port. Only used with `--dev`. |
 
-| Flag | Required | Description |
-|------|----------|-------------|
-| `--remote` | No | Binds to `0.0.0.0` so other devices (phone, tablet) can reach the server. Use this for Tailscale/LAN access. |
-| `--host <ip>` | No | Bind to a specific IP. Default is `127.0.0.1` (localhost only). |
-| `--port <n>` | No | Backend port. Default is `8787`. |
-| `--dev` | No | Force the React dev server (`npm start`) even if a pre-built frontend exists. Enables hot-reload for frontend development. Sets the dev-server host to whatever `--host` is. |
-| `--frontend-port <n>` | No | Dev-server port (default `3000`). Only used with `--dev`. |
-
-After installation the frontend is pre-built and served by the backend on the same port (`8787`). No separate `npm start` is needed.
+When running as a daemon (`start`), logs are written to `~/.agentviz/server.log`.
 
 ### `agentviz run`
 
 Runs and monitors one coding agent process.
 
 ```bash
-agentviz run -w <workspace> <agent-type> <agent-command> [agent-args...]
+agentviz run -w <workspace> <agent> [custom-command]
 ```
 
-| Flag / Argument | Required | Description |
+| Argument / Flag | Required | Description |
 |-----------------|----------|-------------|
-| `-w <workspace>` | **Yes** | Directory the agent will work inside. Be careful not to use `-w .` from inside the AgentViz directory, as the agent could accidentally modify AgentViz itself. |
-| `<agent-type>` | **Yes** | See table below |
-| `<agent-command>` | **Yes** | See table below |
-| `--tmux-start` | No | Run agent in a `tmux` session and expose a `ttyd` web terminal |
-| `--remote <ip-or-hostname>` | No | Required if using `--tmux-start` for phone access — sets the host embedded in the `ttyd` terminal URL |
-| `-i, --id <agent-id>` | No | Custom ID for this agent in the dashboard (default: `<agent-type>-<pid>`) |
+| `-w <workspace>` | **Yes** | Directory the agent will work inside. |
+| `<agent>` | **Yes** | `claude`, `gemini`, or `codex`. AgentViz resolves the agent type and binary automatically. Pass a custom command after to override (e.g. a full path). |
+| `--tmux-start` | No | Run the agent inside a `tmux` session and expose a `ttyd` web terminal. |
+| `--remote <ip-or-hostname>` | No | Host embedded in ttyd terminal URLs — needed for phone/Tailscale access with `--tmux-start`. |
+| `-i, --id <agent-id>` | No | Custom agent ID shown in the dashboard (default: `<agent>-<pid>`). |
 
-**`<agent-type>` and `<agent-command>` by agent:**
+**Examples:**
 
-| Agent | `<agent-type>` | `<agent-command>` |
-|-------|---------------|-------------------|
-| Gemini CLI | `gemini-cli` | `/opt/homebrew/bin/gemini` |
-| Claude Code | `claude-code` | `claude` |
-| Codex CLI | `codex-cli` | `codex` |
-| Synthetic (test) | `synthetic` | any dummy command (e.g. `echo`) |
+```bash
+# Shorthand — type and command resolved automatically
+agentviz run -w ~/myproject claude
+agentviz run -w ~/myproject gemini
+agentviz run -w ~/myproject codex
+
+# Custom binary path (overrides the default)
+agentviz run -w ~/myproject gemini /opt/homebrew/bin/gemini
+
+# With tmux terminal + Tailscale phone access
+agentviz run -w ~/myproject --tmux-start --remote 100.x.x.x claude
+```
 
 > **`--remote` on `server` vs `run` are different:**
-> - `agentviz server --remote` — exposes the **backend** to other devices
-> - `agentviz run --remote <ip>` — exposes each agent's **ttyd web terminal** to other devices
+> - `agentviz server --remote` — exposes the dashboard to other devices
+> - `agentviz run --remote <ip>` — sets the host in each agent's ttyd terminal URL
 
 ### `agentviz update`
 
-Pulls the latest code from the repo and reinstalls Python and frontend dependencies in-place.
+Pulls the latest code and rebuilds everything in-place.
 
 ```bash
 agentviz update
 ```
 
-No flags needed. Run this whenever you want to upgrade to the latest version.
+### `agentviz build`
 
-## Running AgentViz
-
-Open **2 terminal tabs** and run one command in each.
-
-**Tab 1 — Server (backend + frontend)**
-```bash
-agentviz server          # local only  → open http://localhost:8787
-agentviz server --remote # Tailscale   → open http://<TAILSCALE_IP>:8787
-```
-
-**Tab 2 — Agent**
-
-Pick the command for the agent you want to run. Replace `<WORKSPACE>` with the directory the agent should work in, and `<TAILSCALE_IP>` with your Tailscale IP or hostname.
+Builds the React frontend and bundles it into the package. Run this if you modify the frontend source and want the changes reflected without `--dev`.
 
 ```bash
-# Gemini CLI
-agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> gemini-cli /opt/homebrew/bin/gemini
-
-# Claude Code
-agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> claude-code claude
-
-# Codex CLI
-agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> codex-cli codex
+agentviz build
 ```
-
-> If the agent binary is on your `PATH` you can use its name directly (e.g. `gemini`). Otherwise pass the full path.
 
 ## Tailscale Setup (Phone Access)
 
-This is the standard way to access AgentViz from your phone.
-
-### On your laptop (running AgentViz)
+### On your laptop
 
 1. Install and sign in to Tailscale.
-2. Ensure Tailscale is connected.
-3. Get your Tailscale IPv4 address (example command):
-
+2. Get your Tailscale IP:
 ```bash
 tailscale ip -4
 ```
 
-Use that IP (or your Tailscale hostname) as `<TAILSCALE_IP_OR_HOSTNAME>`.
-
 ### On your phone
 
 1. Install Tailscale and sign into the same tailnet.
-2. Confirm the phone is connected to Tailscale.
-3. Open the dashboard in Safari/Chrome:
-
-```text
-http://<TAILSCALE_IP_OR_HOSTNAME>:8787
+2. Open the dashboard:
+```
+http://<TAILSCALE_IP>:8787
 ```
 
-Example:
-
-```text
-http://100.x.x.x:8787
+Start AgentViz with:
+```bash
+agentviz server --remote
+agentviz run -w <WORKSPACE> --tmux-start --remote <TAILSCALE_IP> claude
 ```
 
-Notes:
+> Per-agent `ttyd` terminals use dynamically assigned ports — AgentViz shows the links in the dashboard.
 
-- `:8787` is the single port for both the API and the frontend
-- Per-agent `ttyd` terminals use dynamically assigned ports (AgentViz publishes those links in the dashboard)
+## Manual Setup (alternative to Quick Install)
+
+> Skip this section if you used the quick installer — the wrapper handles the venv automatically.
+
+**System requirements:** `python` 3.10+, `node` + `npm`, `git`
+
+```bash
+# Python deps
+uv sync
+
+# Frontend
+agentviz build
+
+# Verify
+agentviz --help
+```
+
+Or with pip instead of uv:
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
+agentviz build
+```
 
 ## Benchmarks
 
@@ -269,32 +225,28 @@ AgentViz was benchmarked against [TmuxCC](https://github.com/nyanko3141592/tmuxc
 
 ## Troubleshooting
 
-- `nvm installation failed` / frontend deps skipped during install
-  - Install Node.js manually from https://nodejs.org (LTS recommended), then run:
-    ```bash
-    npm install --prefix <path-to-agentviz>/frontend
-    ```
+- **`nvm installation failed` / frontend build skipped during install**
+  - Install Node.js manually from https://nodejs.org (LTS), then run `agentviz build`
 
-- `Error: Could not connect to AgentViz server at http://localhost:8787`
-  - Start `agentviz server` first (same machine as `agentviz run`)
+- **`Error: Could not connect to AgentViz server at http://localhost:8787`**
+  - Start `agentviz server` first — it must run on the same machine as `agentviz run`
 
-- `tmux not found` / `ttyd not found`
-  - Install both system tools (`brew install tmux ttyd`)
-  - `--tmux-start` requires both
+- **`tmux not found` / `ttyd not found`**
+  - `brew install tmux ttyd` (macOS) — both required for `--tmux-start`
 
-- Phone can open dashboard but shows disconnected
-  - Make sure server was started with `agentviz server --remote`
+- **Phone shows disconnected**
+  - Start the server with `agentviz server --remote`
   - Confirm port `8787` is reachable on your Tailscale IP
 
-- Phone cannot open `http://<ip>:8787`
-  - Make sure server was started with `agentviz server --remote`
-  - Confirm laptop and phone are on the same Tailscale tailnet
+- **Phone can't open `http://<ip>:8787`**
+  - Start the server with `agentviz server --remote`
+  - Confirm both devices are on the same Tailscale tailnet
 
-- Agent settings files are modified unexpectedly
-  - AgentViz writes temporary hook config into the workspace (`.gemini/settings.json` or `.claude/settings.local.json`) and restores it on cleanup
-  - Codex uses a temporary `CODEX_HOME` and does not modify your global config
+- **Agent settings files modified unexpectedly**
+  - AgentViz writes temporary hook config into the workspace (`.gemini/settings.json` or `.claude/settings.local.json`) and restores it on exit
+  - Codex uses a temporary `CODEX_HOME` and does not touch your global config
 
 ## Notes
 
-- `agentviz run` connects to the backend at `http://localhost:8787`, so the backend must run on the same machine as the monitored agent process.
-- For remote use, you are remotely viewing the dashboard/ttyd terminals; the actual agent process still runs on the laptop.
+- `agentviz run` connects to `http://localhost:8787` — the server must run on the same machine as the agent.
+- For remote access, you view the dashboard and ttyd terminals remotely; the agent process itself still runs on your laptop.
